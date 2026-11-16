@@ -9,10 +9,11 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor}
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Corners, DispatchPhase, Element, ElementId, Entity,
     Font, FontFallbacks, FontStyle, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    RenderImage, ShapedLine, SharedString, StrikethroughStyle, Style, TextRun, UnderlineStyle,
-    Window, fill, point, px, quad, relative, size,
+    IntoElement, LayoutId, LineLayout, MouseButton, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    Pixels, Point, RenderImage, ShapedLine, SharedString, StrikethroughStyle, Style, TextRun,
+    UnderlineStyle, Window, fill, point, px, quad, relative, size,
 };
+use unicode_width::UnicodeWidthChar;
 
 use super::TerminalPane;
 use super::colors::{blend, resolve};
@@ -766,7 +767,13 @@ fn layout_grid(
             }),
             strikethrough: None,
         };
-        let line = text_system.shape_line(text, font_size, &[run], None);
+        let line = text_system.shape_line(text.clone(), font_size, &[run], None);
+        let line = align_to_grid(
+            line,
+            text.char_indices()
+                .map(|(byte, ch)| (byte, ch.width().unwrap_or(0))),
+            px(cell_width),
+        );
         let cursor_x = origin.x + px(cursor.point.column.0 as f32 * cell_width);
         let caret_x = line.x_for_index(pane.input.cursor_byte());
         let right = bounds.right() - px(pad_x);
@@ -883,6 +890,57 @@ fn cell_run_quad(
     )
 }
 
+fn grid_shifts(
+    cells: impl IntoIterator<Item = (usize, usize)>,
+    cell_width: Pixels,
+    x_for_index: impl Fn(usize) -> Pixels,
+) -> (Vec<(usize, Pixels)>, Pixels) {
+    let mut shifts = Vec::new();
+    let mut column = 0;
+    let mut after_wide = false;
+    for (byte, width) in cells {
+        if width == 0 {
+            continue;
+        }
+        if width > 1 || after_wide {
+            shifts.push((byte, cell_width * column as f32 - x_for_index(byte)));
+        }
+        column += width;
+        after_wide = width > 1;
+    }
+    (shifts, cell_width * column as f32)
+}
+
+fn align_to_grid(
+    mut line: ShapedLine,
+    cells: impl IntoIterator<Item = (usize, usize)>,
+    cell_width: Pixels,
+) -> ShapedLine {
+    let (shifts, width) = grid_shifts(cells, cell_width, |byte| line.x_for_index(byte));
+    if shifts.is_empty() {
+        return line;
+    }
+    let mut layout = LineLayout {
+        font_size: line.font_size,
+        width,
+        ascent: line.ascent,
+        descent: line.descent,
+        runs: line.runs.clone(),
+        len: line.len(),
+    };
+    // Anchor fallback glyphs to cells without reshaping narrow runs or combining clusters.
+    for run in &mut layout.runs {
+        for glyph in &mut run.glyphs {
+            let end = shifts.partition_point(|(byte, _)| *byte <= glyph.index);
+            if let Some(index) = end.checked_sub(1) {
+                glyph.position.x += shifts[index].1;
+            }
+        }
+    }
+    *line = Arc::new(layout);
+    line
+}
+
 fn shape_row(
     pane: &mut TerminalPane,
     row: &[CellSnap],
@@ -906,9 +964,11 @@ fn shape_row(
     })?;
 
     let mut text = String::new();
+    let mut cells = Vec::new();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     f32::from(font_size).to_bits().hash(&mut hasher);
+    pane.size.cell_width.to_bits().hash(&mut hasher);
 
     // Only a configured selection_fg recolours selected text; otherwise the
     // selection is just the background quad and the cache key is untouched.
@@ -985,6 +1045,7 @@ fn shape_row(
             text.extend(zw.iter());
         }
         let added = text.len() - start_len;
+        cells.push((start_len, width));
 
         let style_key = (
             color_key(fg),
@@ -1036,6 +1097,7 @@ fn shape_row(
     }
 
     text.hash(&mut hasher);
+    cells.hash(&mut hasher);
     let key = hasher.finish();
     if let Some(line) = pane.prev_shape_cache.remove(&key) {
         pane.shape_cache.insert(key, line.clone());
@@ -1045,6 +1107,7 @@ fn shape_row(
         return Some(line.clone());
     }
     let line = text_system.shape_line(SharedString::from(text), font_size, &runs, None);
+    let line = align_to_grid(line, cells, px(pane.size.cell_width));
     pane.shape_cache.insert(key, line.clone());
     Some(line)
 }
@@ -1052,6 +1115,94 @@ fn shape_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_glyphs_and_cursor_use_the_same_cell_positions() {
+        let text = "阿里云";
+        let cell = px(8.4);
+        // CoreText's fallback advances at font size 14 are 14px, not two 8.4px cells.
+        let natural_x = |byte| px((byte / 3) as f32 * 14.0);
+        let (shifts, width) = grid_shifts(
+            text.char_indices()
+                .map(|(byte, ch)| (byte, ch.width().unwrap())),
+            cell,
+            natural_x,
+        );
+        assert_eq!(shifts.len(), 3);
+        for (character, (byte, shift)) in shifts.iter().enumerate() {
+            let cursor_x = cell * (character * 2) as f32;
+            assert!((natural_x(*byte) + *shift - cursor_x).abs() < px(0.001));
+        }
+        assert!((width - cell * 6.0).abs() < px(0.001));
+    }
+
+    #[test]
+    fn mixed_chinese_and_ascii_snap_by_cells_not_utf8_bytes() {
+        let text = "a中b文c";
+        let (shifts, width) = grid_shifts(
+            text.char_indices()
+                .map(|(byte, ch)| (byte, ch.width().unwrap())),
+            px(10.0),
+            |byte| {
+                px(match byte {
+                    1 => 10.0,
+                    4 => 24.0,
+                    5 => 34.0,
+                    8 => 48.0,
+                    _ => panic!("unexpected anchor {byte}"),
+                })
+            },
+        );
+        assert_eq!(
+            shifts,
+            vec![(1, px(0.0)), (4, px(6.0)), (5, px(6.0)), (8, px(12.0))]
+        );
+        assert_eq!(width, px(70.0));
+    }
+
+    #[test]
+    fn narrow_ligatures_and_combining_marks_keep_their_relative_positions() {
+        let text = "fi中fi\u{301}";
+        let (shifts, width) = grid_shifts(
+            text.char_indices()
+                .map(|(byte, ch)| (byte, ch.width().unwrap())),
+            px(10.0),
+            |byte| {
+                px(match byte {
+                    2 => 20.0,
+                    5 => 34.0,
+                    _ => panic!("must not split a ligature or combining cluster at {byte}"),
+                })
+            },
+        );
+        assert_eq!(shifts, vec![(2, px(0.0)), (5, px(6.0))]);
+        assert_eq!(width, px(60.0));
+        let (shifts, _) = grid_shifts(
+            "office".char_indices().map(|(byte, _)| (byte, 1)),
+            px(10.0),
+            |_| panic!("ASCII shaping must remain untouched"),
+        );
+        assert!(shifts.is_empty());
+    }
+
+    #[test]
+    fn emoji_occupy_two_cells_without_splitting_the_utf8_sequence() {
+        let text = "A🙂B";
+        let (shifts, width) = grid_shifts(
+            text.char_indices()
+                .map(|(byte, ch)| (byte, ch.width().unwrap())),
+            px(10.0),
+            |byte| {
+                px(match byte {
+                    1 => 10.0,
+                    5 => 24.0,
+                    _ => panic!("unexpected anchor {byte}"),
+                })
+            },
+        );
+        assert_eq!(shifts, vec![(1, px(0.0)), (5, px(6.0))]);
+        assert_eq!(width, px(40.0));
+    }
 
     /// A screen from a picture of it: a digit is the cell in that column
     /// of image 1's row (the screen row less `shift`), a letter is text.

@@ -18,6 +18,11 @@ write for users: what changed and why it matters, not which files moved.
   following the caret. Unconfirmed text stays out of the shell and broadcast
   panes; cancelling or changing focus discards the composition.
 
+### Fixed
+
+- Chinese and other wide terminal characters now follow the same cell grid as
+  the cursor, fixing gaps after text and displaced glyphs under a block cursor.
+
 ## [0.9.4] - 2026-11-06
 
 ### Added

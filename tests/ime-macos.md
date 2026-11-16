@@ -15,6 +15,9 @@ unit tests do not exercise AppKit or the system candidate window.
   text should appear in the other panes.
 - Compose near the pane's right/bottom edge, resize, split, and change font
   size. The preedit and candidate window should follow the visible caret.
+- Type `阿里云` and mixed ASCII/Chinese, then move the cursor left and right.
+  Text must stay aligned with the cell grid, with no growing gap before the
+  cursor and no displaced duplicate character under a block cursor.
 - Enter Chinese in tab/workspace names, file create/rename/move prompts,
   startup commands, the command palette, file finder, navigator, command
   history, and file-tree filtering. Confirm searches/filters refresh.
