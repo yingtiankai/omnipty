@@ -20,6 +20,11 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Changed
 
+- Removed the ordinary pane-focus border. Broadcast, failure, and configured
+  SSH-host warning borders remain; pane sizes and split dividers are unchanged.
+- Copy mode now works in full-screen programs' alternate screens too. Mouse
+  clicks and scrolling stay local while copying instead of reaching the program.
+  Alternate screens still have no terminal scrollback beyond their current grid.
 - Automatic tab titles prefer a program's OSC title, then its foreground
   process name (including shells). Manually renamed tabs still take precedence.
 - Workspace labels now follow the active tab's focused pane directory, for

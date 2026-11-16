@@ -177,8 +177,7 @@ pub enum TerminalEvent {
     /// to fan out to the tab's other panes. This pane has already written
     /// them to its own shell.
     Input(Vec<u8>),
-    /// Something to say in the window banner ("copy mode needs the primary
-    /// screen").
+    /// Something to say in the window banner.
     Notice(String),
     /// The foreground process changed (a program started or ended, ssh
     /// connected or dropped).
@@ -1298,8 +1297,7 @@ impl TerminalPane {
         }
     }
 
-    /// Enter copy mode. Refused while a program holds the alternate
-    /// screen — there's no scrollback there, and vim already has a vi mode.
+    /// Enter copy mode on the active grid, including a full-screen program's.
     pub fn enter_copy_mode(&mut self, cx: &mut Context<Self>) -> Result<(), &'static str> {
         if self.child_exited.is_some() {
             return Err("the shell has exited — press ⏎ to restart it first");
@@ -1308,9 +1306,6 @@ impl TerminalPane {
             return Err("no session");
         };
         let mut term = session.term.lock();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
-            return Err("copy mode isn't available while a full-screen program has the terminal");
-        }
         if !term.mode().contains(TermMode::VI) {
             term.toggle_vi_mode();
         }
@@ -2516,13 +2511,9 @@ impl TerminalPane {
     }
 
     fn mouse_mode_active(&self, shift: bool) -> bool {
-        if shift {
-            return false; // shift bypasses reporting to force local selection
-        }
         self.session
             .as_ref()
-            .map(|s| s.term.lock().mode().intersects(TermMode::MOUSE_MODE))
-            .unwrap_or(false)
+            .is_some_and(|s| mouse_reporting(*s.term.lock().mode(), shift))
     }
 
     fn send_mouse_report(
@@ -2911,11 +2902,16 @@ enum WheelTarget {
     Scrollback,
 }
 
-/// Mouse reporting is asked first. Alternate scroll is on by default, so
-/// asking it first sent arrows to every alt-screen program — and the wheel
-/// moved the cursor in neovim and lazygit instead of scrolling the view.
+fn mouse_reporting(mode: TermMode, shift: bool) -> bool {
+    mode.intersects(TermMode::MOUSE_MODE) && !mode.contains(TermMode::VI) && !shift
+}
+
+/// Copy mode keeps wheel input local. Otherwise mouse reporting wins over
+/// alternate scroll, which would move neovim's cursor instead of its view.
 fn wheel_target(mode: TermMode, shift: bool) -> WheelTarget {
-    if mode.intersects(TermMode::MOUSE_MODE) && !shift {
+    if mode.contains(TermMode::VI) {
+        WheelTarget::Scrollback
+    } else if mouse_reporting(mode, shift) {
         WheelTarget::Report
     } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
         WheelTarget::Arrows
@@ -3241,6 +3237,89 @@ impl Render for TerminalPane {
                         ),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod copy_mode_tests {
+    use super::*;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::{Term, test::TermSize};
+    use alacritty_terminal::vte::ansi::Processor;
+
+    #[test]
+    fn alternate_screen_supports_vi_selection_search_and_preserves_the_live_cursor() {
+        let mut term = Term::new(TermConfig::default(), &TermSize::new(40, 4), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"primary");
+        parser.advance(
+            &mut term,
+            "\x1b[?1049h\x1b[H你好 世界\r\nline two\x1b[?1002h".as_bytes(),
+        );
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        let live_cursor = term.grid().cursor.point;
+        term.toggle_vi_mode();
+        term.vi_goto_point(GridPoint::new(Line(0), Column(0)));
+        let mut selection =
+            Selection::new(SelectionType::Simple, term.vi_mode_cursor.point, Side::Left);
+        selection.include_all();
+        term.selection = Some(selection);
+        term.vi_motion(ViMotion::Right);
+        assert_eq!(term.selection_to_string().as_deref(), Some("你好"));
+        term.selection = None;
+
+        let mut regex = RegexSearch::new("世界").unwrap();
+        let found = term
+            .search_next(
+                &mut regex,
+                GridPoint::new(Line(0), Column(0)),
+                Direction::Right,
+                Side::Left,
+                None,
+            )
+            .unwrap();
+        term.vi_goto_point(*found.start());
+        assert_eq!(
+            term.vi_mode_cursor.point,
+            GridPoint::new(Line(0), Column(5))
+        );
+        term.scroll_display(Scroll::Delta(10));
+        assert_eq!(term.grid().history_size(), 0);
+        assert_eq!(term.grid().display_offset(), 0);
+        assert!(!mouse_reporting(*term.mode(), false));
+
+        term.toggle_vi_mode();
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.grid().cursor.point, live_cursor);
+        assert!(mouse_reporting(*term.mode(), false));
+        parser.advance(&mut term, b"\x1b[?1049l");
+        let primary: String = (0..7)
+            .map(|col| term.grid()[Line(0)][Column(col)].c)
+            .collect();
+        assert_eq!(primary, "primary");
+    }
+
+    #[test]
+    fn copy_mode_keeps_mouse_and_wheel_input_local_on_both_screens() {
+        for screen in [
+            TermMode::empty(),
+            TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL,
+        ] {
+            for mouse in [
+                TermMode::empty(),
+                TermMode::MOUSE_REPORT_CLICK,
+                TermMode::MOUSE_DRAG,
+                TermMode::MOUSE_MOTION,
+            ] {
+                let mode = screen | mouse | TermMode::VI;
+                for shift in [false, true] {
+                    assert!(!mouse_reporting(mode, shift));
+                    assert_eq!(wheel_target(mode, shift), WheelTarget::Scrollback);
+                }
+                assert_eq!(mouse_reporting(screen | mouse, false), !mouse.is_empty());
+                assert!(!mouse_reporting(screen | mouse, true));
+            }
+        }
     }
 }
 

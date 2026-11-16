@@ -1604,7 +1604,6 @@ impl OmniPTY {
         &self,
         node: &Node<PaneId>,
         path: &NodePath,
-        accent: gpui::Hsla,
         window: &Window,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
@@ -1616,8 +1615,6 @@ impl OmniPTY {
                 let focused = pane.focus_handle(cx).is_focused(window);
                 let tab = self.tab();
                 let many = tab.layout.len() > 1;
-                // Only mark the active pane when there is a choice to make.
-                let show_ring = focused && (many || self.drawer_visible);
                 let flashing = self
                     .fail_flash
                     .get(id)
@@ -1644,8 +1641,6 @@ impl OmniPTY {
                     } else {
                         blend(color, self.theme.background, 0.35)
                     }
-                } else if show_ring {
-                    accent
                 } else {
                     gpui::transparent_black()
                 };
@@ -1683,8 +1678,7 @@ impl OmniPTY {
                 } else {
                     container.flex_col()
                 };
-                // A hairline between siblings; the focus ring stays the only
-                // coloured edge, so the active pane still reads at a glance.
+                // A neutral hairline between siblings.
                 let divider = blend(self.theme.foreground, self.theme.background, 0.72);
                 for (ix, child) in children.iter().enumerate() {
                     if ix > 0 {
@@ -1710,7 +1704,6 @@ impl OmniPTY {
                     container = container.child(cell.child(self.render_pane_node(
                         child,
                         &child_path,
-                        accent,
                         window,
                         cx,
                     )));
@@ -4904,7 +4897,7 @@ impl OmniPTY {
     // --- Split resizing ---
 
     /// Smallest pane size along `axis`, in pixels, for a pane with these
-    /// cell metrics: a few cells plus the padding and focus ring.
+    /// cell metrics: a few cells plus the padding and pane border.
     fn min_pane_px(&self, axis: Axis, layout: &LastLayout) -> f32 {
         let pad = self.config.window.padding;
         match axis {
@@ -4913,7 +4906,7 @@ impl OmniPTY {
         }
     }
 
-    /// A pane's on-screen extent along `axis`, including its focus ring.
+    /// A pane's on-screen extent along `axis`, including its border.
     fn pane_extent(&self, id: PaneId, axis: Axis, cx: &Context<Self>) -> Option<f32> {
         let bounds = self.pane_bounds(id, cx)?;
         Some(
@@ -6927,9 +6920,11 @@ impl Render for OmniPTY {
                                     Some(id) if tab.layout.leaves().contains(&id) => Node::Leaf(id),
                                     _ => tab.layout.clone(),
                                 };
-                                div().flex_1().min_h_0().overflow_hidden().child(
-                                    self.render_pane_node(&layout, &Vec::new(), accent, window, cx),
-                                )
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .child(self.render_pane_node(&layout, &Vec::new(), window, cx))
                             }),
                     )
                     // The drawer's right edge drags like a pane divider.

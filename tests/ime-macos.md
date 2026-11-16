@@ -58,3 +58,21 @@ unit tests do not exercise AppKit or the system candidate window.
   status-bar toggle. Old `[status_bar]` settings, including `enabled = true`
   and either position, must not restore the bar or cause a config error.
   Broadcast pane borders, copy-mode labels, and tab activity dots still work.
+
+## Pane focus and full-screen copy mode
+
+- Focus a single pane with the drawer open, switch between split panes, and
+  zoom a pane. No ordinary blue focus border should appear, and the content
+  must not shift on focus changes. Split dividers, inactive-pane dimming,
+  broadcast red borders, failure flashes, and configured SSH-host borders remain.
+- In a full-screen TUI (vim, less, or Codex's alternate-screen mode), press
+  `cmd-shift-v` or `ctrl-w [` to enter OmniPTY copy mode. Check `hjkl`, `v`/`V`,
+  `y`/`yy`, and `/`/`?` searches including Chinese. A yank or `q` should return
+  input to the TUI; Escape first clears a selection, then leaves copy mode.
+- With mouse reporting enabled in the TUI, clicks and drags should select text
+  locally in copy mode, and wheel/trackpad scrolling must not send mouse reports
+  or arrow keys to the TUI. Keyboard input and paste must not reach it either.
+  Mouse/scroll reporting should resume after leaving copy mode.
+- Repeat with the macOS window in native full screen and with a zoomed pane.
+  The alternate screen has only its current grid, not the shell's scrollback;
+  application redraws can still change that grid while copy mode is active.
