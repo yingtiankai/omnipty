@@ -148,9 +148,6 @@ pub enum TerminalEvent {
     Exited(Option<i32>),
     TitleChanged,
     CwdChanged(PathBuf),
-    /// Output arrived (coalesced with the repaint tick) — for the "unread"
-    /// dot on background tabs.
-    Output,
     /// The shell integration reported a command starting.
     CommandStarted,
     /// ...and finishing. `label` is the command's first line or a stand-in.
@@ -1122,7 +1119,6 @@ impl TerminalPane {
             timer.await;
             this.update(cx, |pane, cx| {
                 pane.repaint_scheduled = false;
-                cx.emit(TerminalEvent::Output);
                 cx.notify();
             })
             .ok();

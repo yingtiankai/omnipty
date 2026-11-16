@@ -57,7 +57,13 @@ unit tests do not exercise AppKit or the system candidate window.
   toasts sit 8 px from the bottom. View and the command palette must have no
   status-bar toggle. Old `[status_bar]` settings, including `enabled = true`
   and either position, must not restore the bar or cause a config error.
-  Broadcast pane borders, copy-mode labels, and tab activity dots still work.
+  Broadcast pane borders and copy-mode labels still work.
+- Tabs should have only their titles and close buttons, with no number or
+  status dot, including while commands run/fail or background output arrives.
+  `tabs.show_numbers = true` and `false` must both load without restoring numbers.
+  Check numbered shortcuts (`cmd-1` through `cmd-9`), Ctrl+Tab, dragging,
+  double-click rename, close buttons, and the add button. Workspace numbers,
+  command history, failure flashes, and desktop notifications should be unchanged.
 
 ## Pane focus and full-screen copy mode
 

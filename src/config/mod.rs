@@ -237,7 +237,7 @@ preview_in = "tab"            # tab | split — where a markdown preview opens
 
 [tabs]
 enabled      = true           # show the tab bar (View → Toggle Tab Bar flips it for the session)
-show_numbers = true           # small position number on each tab — the n in cmd-n
+# Legacy tabs.show_numbers is accepted but ignored; tab numbers are no longer drawn.
 close_last   = "workspace"    # workspace | new_tab — closing a workspace's last tab closes the
                               # workspace, or leaves it with a fresh tab in your home directory
 
@@ -249,7 +249,7 @@ on_failure_always   = false   # a non-zero exit notifies regardless of duration
 passthrough_osc9    = true    # let programs post notifications (OSC 9 / OSC 777)
 
 [commands]
-track        = true           # the command log: tab dots, cmd-r history, gutter
+track        = true           # the command log: cmd-r history, notifications, gutter
 emit_cmdline = true           # the shell sends each command line to OmniPTY (memory only)
 max_entries  = 500
 

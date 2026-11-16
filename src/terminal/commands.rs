@@ -2,8 +2,7 @@
 //! ended — built from the OSC 133 markers the shell integration emits.
 //!
 //! Pure data, no GPUI, so the state machine is unit-testable. The pane
-//! feeds it markers; the app reads it for notifications, the tab bar, and
-//! history search.
+//! feeds it markers; the app reads it for notifications and history search.
 
 use std::collections::VecDeque;
 use std::ops::Range;

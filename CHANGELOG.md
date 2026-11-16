@@ -20,6 +20,10 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Changed
 
+- Tabs now show only their titles and close buttons, without position numbers
+  or running/failed/unread dots. Tab-switching shortcuts are unchanged. Legacy
+  `tabs.show_numbers` settings still load but are ignored; workspace numbering,
+  command history, failure flashes, and desktop notifications are unchanged.
 - Removed the ordinary pane-focus border. Broadcast, failure, and configured
   SSH-host warning borders remain; pane sizes and split dividers are unchanged.
 - Copy mode now works in full-screen programs' alternate screens too. Mouse

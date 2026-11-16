@@ -37,8 +37,6 @@ pub type PaneId = u64;
 struct TabState {
     layout: Node<PaneId>,
     active: PaneId,
-    /// Output arrived while this tab was in the background.
-    unread: bool,
     /// A pane shown at full tab size, hiding its siblings. Transient: not
     /// saved with the workspace.
     zoomed: Option<PaneId>,
@@ -57,7 +55,6 @@ impl TabState {
         Self {
             layout,
             active,
-            unread: false,
             zoomed: None,
             broadcast: false,
             title: None,
@@ -2414,22 +2411,6 @@ impl OmniPTY {
                 }
             }
             TerminalEvent::TitleChanged => cx.notify(),
-            TerminalEvent::Output => {
-                // A background tab gets a dot; the active one is being
-                // watched already.
-                let Some(id) = self.pane_id_of(emitter) else {
-                    return;
-                };
-                if let Some((wix, tix)) = self.locate_pane(id)
-                    && !(wix == self.active_ws && tix == self.ws().active_tab)
-                {
-                    let tab = &mut self.workspaces[wix].tabs[tix];
-                    if !tab.unread {
-                        tab.unread = true;
-                        cx.notify();
-                    }
-                }
-            }
             TerminalEvent::CommandStarted => {
                 cx.notify();
             }
@@ -5358,32 +5339,6 @@ impl OmniPTY {
             let is_active = ix == self.ws().active_tab;
             let title = self.tab_title(tab, cx);
             let close_target = tab.active;
-            // Activity: running beats failed beats unread; nothing at all is
-            // the common case and should look like it.
-            let mut running = false;
-            let mut latest_failed: Option<(Instant, bool)> = None;
-            for id in tab.layout.leaves() {
-                let Some(pane) = self.panes.get(&id) else {
-                    continue;
-                };
-                let log = &pane.read(cx).log;
-                running |= log.is_running();
-                if let Some(cmd) = log.last_finished()
-                    && let Some(at) = cmd.finished
-                    && latest_failed.is_none_or(|(t, _)| at > t)
-                {
-                    latest_failed = Some((at, cmd.failed()));
-                }
-            }
-            let indicator = if running {
-                Some(theme.ansi[4])
-            } else if latest_failed.is_some_and(|(_, failed)| failed) {
-                Some(theme.ansi[1])
-            } else if tab.unread && !is_active {
-                Some(dim)
-            } else {
-                None
-            };
             let drag_title: gpui::SharedString = title.clone().into();
             bar = bar.child(
                 div()
@@ -5417,25 +5372,6 @@ impl OmniPTY {
                     .on_drop(cx.listener(move |this, drag: &TabDrag, _window, cx| {
                         this.move_tab(drag.ix, ix, cx);
                     }))
-                    .when(self.config.tabs.show_numbers, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .text_color(dim)
-                                .child((ix + 1).to_string()),
-                        )
-                    })
-                    .when_some(indicator, |d, color| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .w(px(6.0))
-                                .h(px(6.0))
-                                .rounded_full()
-                                .bg(color),
-                        )
-                    })
                     .child(title)
                     .child(
                         div()
@@ -6482,8 +6418,6 @@ impl Render for OmniPTY {
                 entity.update(cx, |this, cx| this.apply_theme(original, cx));
             });
         }
-
-        self.tab_mut().unread = false;
 
         let theme = self.theme.clone();
         let config = self.config.clone();
