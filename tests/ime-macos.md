@@ -27,3 +27,12 @@ unit tests do not exercise AppKit or the system candidate window.
 - Replace a selection containing Chinese and emoji with a composition.
   Confirm the replacement and cancel it in separate runs; cancellation on
   focus loss should restore the original text and selection.
+- In Codex, type two lines with Shift+Enter between them: no message should
+  be sent until plain Enter. Also check Alt+Enter and Ctrl-J, and paste a
+  multiline Chinese draft; pasting must not submit it.
+- While selecting an IME candidate in Codex, Enter must only confirm the
+  candidate, not send a message. Shift+Enter after confirmation inserts a newline.
+- Check plain Enter, Ctrl-C, Ctrl-D, Tab, Shift-Tab, and modified F1–F12 in
+  a shell, vim, and tmux. Ctrl+Tab must still switch the app's tabs. Legacy
+  applications may need a binding for CSI-u modified Enter; no complete Kitty
+  keyboard-protocol support is advertised by these changes.

@@ -20,6 +20,9 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Fixed
 
+- Shift/Alt/Ctrl+Enter now keep their modifiers instead of becoming a plain
+  Enter, so applications such as Codex can distinguish newline from send.
+  Modified F1–F4 retain their modifiers without changing plain function keys.
 - Chinese and other wide terminal characters now follow the same cell grid as
   the cursor, fixing gaps after text and displaced glyphs under a block cursor.
 

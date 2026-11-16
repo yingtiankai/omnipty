@@ -44,8 +44,19 @@ pub fn to_bytes(ks: &Keystroke, mode: &TermMode, option_as_meta: OptionAsMeta) -
             format!("\x1b[{num}~").into_bytes()
         }
     };
+    let function_key = |letter: char| -> Vec<u8> {
+        if modified {
+            csi_cursor(letter)
+        } else {
+            format!("\x1bO{letter}").into_bytes()
+        }
+    };
 
     match ks.key.as_str() {
+        // shortcut: modified Enter always uses CSI-u, add negotiation if legacy apps need old bindings.
+        "enter" if modified => {
+            return Some(format!("\x1b[13;{mod_param}u").into_bytes());
+        }
         "enter" => return Some(b"\r".to_vec()), // \r, not \n — the PTY expects CR
         "backspace" => {
             let byte = if mods.control { 0x08 } else { 0x7f };
@@ -86,10 +97,10 @@ pub fn to_bytes(ks: &Keystroke, mode: &TermMode, option_as_meta: OptionAsMeta) -
         "pagedown" => return Some(csi_tilde(6)),
         "insert" => return Some(csi_tilde(2)),
         "delete" => return Some(csi_tilde(3)),
-        "f1" => return Some(b"\x1bOP".to_vec()),
-        "f2" => return Some(b"\x1bOQ".to_vec()),
-        "f3" => return Some(b"\x1bOR".to_vec()),
-        "f4" => return Some(b"\x1bOS".to_vec()),
+        "f1" => return Some(function_key('P')),
+        "f2" => return Some(function_key('Q')),
+        "f3" => return Some(function_key('R')),
+        "f4" => return Some(function_key('S')),
         "f5" => return Some(csi_tilde(15)),
         "f6" => return Some(csi_tilde(17)),
         "f7" => return Some(csi_tilde(18)),
@@ -271,6 +282,105 @@ mod tests {
     }
 
     #[test]
+    fn enter_chords_preserve_modifiers_without_changing_plain_enter() {
+        for mode in [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::ALT_SCREEN,
+        ] {
+            for meta in [OptionAsMeta::None, OptionAsMeta::Both] {
+                for (key, expected) in [
+                    ("enter", "\r"),
+                    ("shift-enter", "\x1b[13;2u"),
+                    ("alt-enter", "\x1b[13;3u"),
+                    ("alt-shift-enter", "\x1b[13;4u"),
+                    ("ctrl-enter", "\x1b[13;5u"),
+                    ("ctrl-shift-enter", "\x1b[13;6u"),
+                    ("ctrl-alt-enter", "\x1b[13;7u"),
+                    ("ctrl-alt-shift-enter", "\x1b[13;8u"),
+                ] {
+                    let mut keystroke = ks(key);
+                    // AppKit supplies a newline key_char even for Enter chords.
+                    keystroke.key_char = Some("\n".into());
+                    assert!(!uses_text_input(&keystroke, meta), "{key}");
+                    assert_eq!(
+                        to_bytes(&keystroke, &mode, meta),
+                        Some(expected.as_bytes().to_vec()),
+                        "{key}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn function_keys_preserve_modifiers_and_legacy_plain_sequences() {
+        for mode in [TermMode::empty(), TermMode::APP_CURSOR] {
+            for (prefix, parameter) in [
+                ("", 1),
+                ("shift-", 2),
+                ("alt-", 3),
+                ("alt-shift-", 4),
+                ("ctrl-", 5),
+                ("ctrl-shift-", 6),
+                ("ctrl-alt-", 7),
+                ("ctrl-alt-shift-", 8),
+            ] {
+                for (key, letter) in [("f1", 'P'), ("f2", 'Q'), ("f3", 'R'), ("f4", 'S')] {
+                    let expected = if parameter == 1 {
+                        format!("\x1bO{letter}")
+                    } else {
+                        format!("\x1b[1;{parameter}{letter}")
+                    };
+                    assert_eq!(
+                        to_bytes(&ks(&format!("{prefix}{key}")), &mode, OptionAsMeta::None),
+                        Some(expected.into_bytes()),
+                        "{prefix}{key}"
+                    );
+                }
+                for (key, number) in [
+                    ("f5", 15),
+                    ("f6", 17),
+                    ("f7", 18),
+                    ("f8", 19),
+                    ("f9", 20),
+                    ("f10", 21),
+                    ("f11", 23),
+                    ("f12", 24),
+                ] {
+                    let expected = if parameter == 1 {
+                        format!("\x1b[{number}~")
+                    } else {
+                        format!("\x1b[{number};{parameter}~")
+                    };
+                    assert_eq!(
+                        to_bytes(&ks(&format!("{prefix}{key}")), &mode, OptionAsMeta::None),
+                        Some(expected.into_bytes()),
+                        "{prefix}{key}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_control_and_tab_sequences_stay_unchanged() {
+        for (key, expected) in [
+            ("ctrl-j", b"\n".as_slice()),
+            ("ctrl-c", b"\x03".as_slice()),
+            ("ctrl-d", b"\x04".as_slice()),
+            ("tab", b"\t".as_slice()),
+            ("shift-tab", b"\x1b[Z".as_slice()),
+        ] {
+            assert_eq!(
+                to_bytes(&ks(key), &TermMode::empty(), OptionAsMeta::None),
+                Some(expected.to_vec()),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
     fn arrows_respect_app_cursor_mode() {
         assert_eq!(
             to_bytes(&ks("up"), &TermMode::empty(), OptionAsMeta::None),
@@ -293,10 +403,19 @@ mod tests {
 
     #[test]
     fn cmd_never_reaches_pty() {
-        assert_eq!(
-            to_bytes(&ks("cmd-a"), &TermMode::empty(), OptionAsMeta::None),
-            None
-        );
+        for key in [
+            "cmd-a",
+            "cmd-enter",
+            "cmd-shift-enter",
+            "cmd-f1",
+            "cmd-shift-f12",
+        ] {
+            assert_eq!(
+                to_bytes(&ks(key), &TermMode::empty(), OptionAsMeta::None),
+                None,
+                "{key}"
+            );
+        }
     }
 
     #[test]
@@ -311,6 +430,14 @@ mod tests {
     fn paste_is_sanitized_and_bracketed() {
         let out = prepare_paste("a\nb\x1b[31m", true);
         assert_eq!(out, b"\x1b[200~a\rb[31m\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn multiline_paste_stays_inside_a_single_bracketed_payload() {
+        assert_eq!(
+            prepare_paste("第一行\r\n第二行\nthird", true),
+            "\x1b[200~第一行\r第二行\rthird\x1b[201~".as_bytes(),
+        );
     }
 
     #[test]
