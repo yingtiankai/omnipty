@@ -130,9 +130,9 @@ pub fn to_bytes(ks: &Keystroke, mode: &TermMode, option_as_meta: OptionAsMeta) -
             '\\' => 0x1c,
             ']' => 0x1d,
             '^' | '6' => 0x1e,
-            '_' | '-' => 0x1f,
+            '_' | '-' | '/' => 0x1f,
             '@' | '2' => 0x00,
-            '?' | '/' => 0x7f,
+            '?' => 0x7f,
             _ => return None,
         };
         return Some(if mods.alt && alt_is_meta {
@@ -271,6 +271,50 @@ mod tests {
             to_bytes(&ks("ctrl-["), &mode, OptionAsMeta::None),
             Some(vec![0x1b])
         );
+    }
+
+    #[test]
+    fn ctrl_slash_sends_unit_separator_instead_of_delete() {
+        for mode in [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::ALT_SCREEN,
+        ] {
+            for meta in [OptionAsMeta::None, OptionAsMeta::Both] {
+                for key_char in [None, Some("/"), Some("\x1f"), Some("\x7f")] {
+                    let mut key = ks("ctrl-/");
+                    key.key_char = key_char.map(str::to_owned);
+                    assert!(!uses_text_input(&key, meta));
+                    assert_eq!(to_bytes(&key, &mode, meta), Some(vec![0x1f]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_slash_preserves_meta_and_other_punctuation_encodings() {
+        for (key, meta, expected) in [
+            ("ctrl-alt-/", OptionAsMeta::Both, b"\x1b\x1f".as_slice()),
+            ("ctrl-alt-/", OptionAsMeta::None, b"\x1f".as_slice()),
+            ("ctrl-_", OptionAsMeta::None, b"\x1f".as_slice()),
+            ("ctrl--", OptionAsMeta::None, b"\x1f".as_slice()),
+            ("ctrl-?", OptionAsMeta::None, b"\x7f".as_slice()),
+            ("backspace", OptionAsMeta::None, b"\x7f".as_slice()),
+            ("/", OptionAsMeta::None, b"/".as_slice()),
+            ("?", OptionAsMeta::None, b"?".as_slice()),
+        ] {
+            assert_eq!(
+                to_bytes(&ks(key), &TermMode::empty(), meta),
+                Some(expected.to_vec()),
+                "{key}"
+            );
+        }
+        for key in ["cmd-ctrl-/", "fn-ctrl-/"] {
+            assert_eq!(
+                to_bytes(&ks(key), &TermMode::empty(), OptionAsMeta::None),
+                None
+            );
+        }
     }
 
     #[test]

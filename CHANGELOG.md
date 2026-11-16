@@ -39,6 +39,8 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Fixed
 
+- Ctrl+/ now sends the standard `0x1f` (Ctrl+_) instead of Delete (`0x7f`).
+  Ctrl+?, Backspace, and ordinary slash/question-mark input are unchanged.
 - Shift/Alt/Ctrl+Enter now keep their modifiers instead of becoming a plain
   Enter, so applications such as Codex can distinguish newline from send.
   Modified F1–F4 retain their modifiers without changing plain function keys.

@@ -390,6 +390,58 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_slash_reaches_the_pty_as_unit_separator() {
+        let size = TermSize {
+            columns: 80,
+            screen_lines: 24,
+            cell_width: 8.0,
+            cell_height: 16.0,
+            scale: 1.0,
+        };
+        let options = SessionOptions {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "stty raw -echo && printf CTRL_SLASH_READY && od -An -tx1 -N1".into(),
+            ],
+            working_directory: None,
+            scrollback: 100,
+            env: HashMap::new(),
+            images: false,
+        };
+        let (session, mut rx) = TerminalSession::spawn(options, size).expect("spawn input probe");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !visible_text(&session).contains("CTRL_SLASH_READY") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            visible_text(&session).contains("CTRL_SLASH_READY"),
+            "input probe not ready"
+        );
+        let key = gpui::Keystroke::parse("ctrl-/").unwrap();
+        let bytes = super::super::keys::to_bytes(
+            &key,
+            session.term.lock().mode(),
+            crate::config::schema::OptionAsMeta::None,
+        )
+        .expect("Ctrl+/ should encode");
+        session.write_input(bytes);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut status = None;
+        while status.is_none() && Instant::now() < deadline {
+            while let Ok(event) = rx.try_recv() {
+                if let SessionEvent::Term(AlacEvent::ChildExit(exit)) = event {
+                    status = Some(exit.code());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(status, Some(Some(0)), "input probe did not exit cleanly");
+        let text = visible_text(&session);
+        assert!(text.split_whitespace().any(|word| word == "1f"), "{text}");
+    }
+
+    #[test]
     fn osc_titles_and_title_stack_resets_reach_the_pane() {
         let size = TermSize {
             columns: 80,

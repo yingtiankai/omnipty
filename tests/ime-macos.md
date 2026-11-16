@@ -36,6 +36,10 @@ unit tests do not exercise AppKit or the system candidate window.
   a shell, vim, and tmux. Ctrl+Tab must still switch the app's tabs. Legacy
   applications may need a binding for CSI-u modified Enter; no complete Kitty
   keyboard-protocol support is advertised by these changes.
+- In a raw input probe, Ctrl+/ must produce `0x1f` (the same as Ctrl+_),
+  not `0x7f`. Ctrl+? and Backspace must still produce `0x7f`, and ordinary
+  `/` and `?` must remain printable. Repeat in an alternate-screen TUI;
+  Ctrl+/ should invoke the application's binding rather than delete text.
 
 ## Titles and layout
 
