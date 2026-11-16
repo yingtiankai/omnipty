@@ -39,6 +39,11 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Fixed
 
+- Shells and directly launched programs now close their panes after any normal
+  process exit, including nonzero codes. Ctrl+D after a failed shell command
+  no longer leaves an exited-process screen. Signal exits and launch failures
+  still keep their diagnostics; ordinary command failures and the existing
+  last-tab/workspace closing settings are unchanged.
 - Ctrl+/ now sends the standard `0x1f` (Ctrl+_) instead of Delete (`0x7f`).
   Ctrl+?, Backspace, and ordinary slash/question-mark input are unchanged.
 - Shift/Alt/Ctrl+Enter now keep their modifiers instead of becoming a plain

@@ -2384,32 +2384,15 @@ impl OmniPTY {
         cx: &mut Context<Self>,
     ) {
         match event {
-            TerminalEvent::Exited(code) => {
-                // Follow Terminal.app: a clean `exit` closes the pane, and the
-                // window along with the last pane. A crash or non-zero status
-                // keeps the overlay so the failure stays readable.
-                if *code != Some(0) {
-                    return;
-                }
-                let id = self
-                    .panes
-                    .iter()
-                    .find(|(_, p)| p.entity_id() == emitter.entity_id())
-                    .map(|(id, _)| *id);
-                if let Some(id) = id
-                    && !self.close_pane(id, window, cx)
-                {
-                    window.remove_window();
-                }
-            }
-            TerminalEvent::StartupExited => {
-                // `on_exit = close`: the same path a clean `exit` takes.
+            TerminalEvent::Exited(Some(_)) | TerminalEvent::StartupExited => {
                 if let Some(id) = self.pane_id_of(emitter)
                     && !self.close_pane(id, window, cx)
                 {
                     window.remove_window();
                 }
             }
+            // Signal exits have no exit code; keep their diagnostic screen.
+            TerminalEvent::Exited(None) => {}
             TerminalEvent::TitleChanged => cx.notify(),
             TerminalEvent::CommandStarted => {
                 cx.notify();

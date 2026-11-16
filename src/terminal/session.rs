@@ -361,10 +361,19 @@ mod tests {
             cell_height: 16.0,
             scale: 1.0,
         };
+        let exits = [
+            ("exit 0", Some(0)),
+            ("exit 1", Some(1)),
+            ("exit 3", Some(3)),
+            ("exit 130", Some(130)),
+            ("exit 255", Some(255)),
+            ("kill -TERM $$", None),
+        ];
         for run in 0..50 {
+            let (command, code) = exits[run % exits.len()];
             let options = SessionOptions {
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), "printf last_words; exit 3".into()],
+                args: vec!["-c".into(), format!("printf last_words; {command}")],
                 working_directory: None,
                 scrollback: 100,
                 env: HashMap::new(),
@@ -381,7 +390,11 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert_eq!(status, Some(Some(3)), "run {run}: no exit status");
+            assert_eq!(
+                status,
+                Some(code),
+                "run {run} ({command}): wrong exit status"
+            );
             assert!(
                 visible_text(&session).contains("last_words"),
                 "run {run}: last output lost"

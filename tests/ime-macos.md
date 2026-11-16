@@ -86,3 +86,18 @@ unit tests do not exercise AppKit or the system candidate window.
 - Repeat with the macOS window in native full screen and with a zoomed pane.
   The alternate screen has only its current grid, not the shell's scrollback;
   application redraws can still change that grid while copy mode is active.
+
+## Main-process exits
+
+- At a shell prompt, run `false`, confirm the prompt returns, then press Ctrl+D.
+  The pane should close even if the shell exits with status 1. Repeat with
+  `exit 0`, `exit 1`, `exit 130`, and `exit 255`, including panes launched with
+  `omnipty -e /bin/sh -c 'exit 1'`.
+- Exit a background pane/tab: only that pane/tab should close, without closing
+  another workspace or stealing its focus. Check split panes and both
+  `tabs.close_last` settings when the exiting pane is the last one in a tab.
+- In a disposable shell pane, `kill -TERM $$` must leave the diagnostic screen.
+  A missing `-e` executable must also keep its launch-failure screen. Enter
+  should restart the session; Cmd+W should still close it manually.
+- An ordinary failed command or Codex run inside a live shell must return to
+  the shell, not close the pane. Startup-command `on_exit` policies are unchanged.

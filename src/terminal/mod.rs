@@ -143,8 +143,8 @@ fn on_path(bin: &str) -> bool {
 }
 
 pub enum TerminalEvent {
-    /// The shell exited, with its status. The owning window decides whether
-    /// to close the pane.
+    /// The PTY's main process exited. `None` means it was killed by a signal;
+    /// the owning window decides whether to close the pane.
     Exited(Option<i32>),
     TitleChanged,
     CwdChanged(PathBuf),
