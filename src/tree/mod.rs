@@ -169,6 +169,7 @@ impl FileTree {
         root: PathBuf,
         config: Rc<Config>,
         theme: Rc<Theme>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let show_hidden = config.tree.show_hidden;
@@ -241,6 +242,13 @@ impl FileTree {
                 if tree.update(cx, |tree, cx| tree.refresh_git(cx)).is_err() {
                     break;
                 }
+            }
+        })
+        .detach();
+        cx.on_blur(&this.focus_handle, window, |tree, window, cx| {
+            if tree.filter.cancel_composition() {
+                line_edit::discard_marked_text(window, cx);
+                tree.filter_changed(cx);
             }
         })
         .detach();
@@ -1004,7 +1012,27 @@ impl FileTree {
         }
     }
 
-    fn on_key_down(&mut self, event: &gpui::KeyDownEvent, _w: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.filter.is_composing() {
+            if event.keystroke.key == "escape" {
+                self.filter.cancel_composition();
+                line_edit::discard_marked_text(window, cx);
+                self.filter_changed(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if cfg!(target_os = "macos")
+            && matches!(self.input, Some(InputMode::Filter))
+            && line_edit::is_text_key(&event.keystroke)
+        {
+            return;
+        }
         let Some(mut input) = self.input.take() else {
             return;
         };
@@ -1034,6 +1062,15 @@ impl FileTree {
             }
         }
         cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn filter_input(&mut self) -> Option<&mut LineEdit> {
+        matches!(self.input, Some(InputMode::Filter)).then_some(&mut self.filter)
+    }
+
+    fn filter_changed(&mut self, cx: &mut Context<Self>) {
+        self.rebuild(cx);
         cx.notify();
     }
 
@@ -1718,9 +1755,15 @@ impl Render for FileTree {
                         .items_center()
                         .child(label)
                         .when(editing, |d| {
-                            d.child(line_edit::render(&self.filter, "", &theme, cx, |tree| {
-                                Some(&mut tree.filter)
-                            }))
+                            d.child(line_edit::render(
+                                &self.filter,
+                                "",
+                                &theme,
+                                &self.focus_handle,
+                                cx,
+                                Self::filter_input,
+                                Self::filter_changed,
+                            ))
                         })
                         .child(hint),
                 )

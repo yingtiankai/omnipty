@@ -11,6 +11,13 @@ write for users: what changed and why it matters, not which files moved.
 
 ## [Unreleased]
 
+### Added
+
+- **Chinese and other IME input on macOS.** Compose text at the terminal cursor,
+  in search, and in the app's text fields, with the system candidate window
+  following the caret. Unconfirmed text stays out of the shell and broadcast
+  panes; cancelling or changing focus discards the composition.
+
 ## [0.9.4] - 2026-11-06
 
 ### Added

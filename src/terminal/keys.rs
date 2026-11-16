@@ -3,6 +3,12 @@ use gpui::Keystroke;
 
 use crate::config::schema::OptionAsMeta;
 
+pub fn uses_text_input(ks: &Keystroke, option_as_meta: OptionAsMeta) -> bool {
+    cfg!(target_os = "macos")
+        && crate::line_edit::is_text_key(ks)
+        && !(ks.modifiers.alt && option_as_meta != OptionAsMeta::None)
+}
+
 /// Encode a GPUI keystroke into the byte sequence the PTY expects.
 /// Returns None for keys that must not reach the shell (anything with cmd,
 /// bare modifiers, unrecognized named keys).
@@ -210,6 +216,33 @@ mod tests {
 
     fn ks(s: &str) -> Keystroke {
         Keystroke::parse(s).unwrap()
+    }
+
+    #[test]
+    fn native_text_input_preserves_control_keys_and_option_as_meta() {
+        let mut text = ks("a");
+        text.key_char = Some("a".into());
+        assert_eq!(
+            uses_text_input(&text, OptionAsMeta::None),
+            cfg!(target_os = "macos")
+        );
+        text.modifiers.alt = true;
+        assert_eq!(
+            uses_text_input(&text, OptionAsMeta::None),
+            cfg!(target_os = "macos")
+        );
+        assert!(!uses_text_input(&text, OptionAsMeta::Both));
+        for key in [
+            "enter",
+            "left",
+            "backspace",
+            "escape",
+            "ctrl-c",
+            "cmd-v",
+            "f1",
+        ] {
+            assert!(!uses_text_input(&ks(key), OptionAsMeta::None), "{key}");
+        }
     }
 
     #[test]

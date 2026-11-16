@@ -41,6 +41,7 @@ use crate::keymap::actions::{
     ClearScrollback, Copy, CopyLastBlock, CopyLastCommand, CopyLastOutput, CopyMode, Paste,
     PromptDown, PromptUp, Search, SearchToggleCase, SearchToggleRegex, SearchToggleWord, SelectAll,
 };
+use crate::line_edit::{self, LineEdit};
 use crate::prompt::integration::{Channel, write_channel};
 use crate::startup::{OnExit, RestartDecision, RestartGate, StartupCommand};
 pub use click::ClickTarget;
@@ -320,6 +321,9 @@ pub struct TerminalPane {
     scroll_accum: f32,
     bell_until: Option<Instant>,
     search: Option<SearchState>,
+    /// Only the local IME preedit lives here; committed text goes to the PTY.
+    input: LineEdit,
+    last_ime_bounds: Option<Bounds<Pixels>>,
     /// Prompt rows in absolute line coordinates (history_size + line). Stable
     /// until the scrollback cap rotates lines out; see prompt_up/down. Fed
     /// by OSC 133;A when the shell integration is live, else by the Enter
@@ -388,7 +392,7 @@ pub struct TerminalPane {
 type PreviewRender = Box<dyn Fn(usize) -> Option<Vec<String>>>;
 
 struct SearchState {
-    query: String,
+    query: LineEdit,
     current: Option<Match>,
     /// The query isn't a valid regex (only possible with the regex toggle).
     invalid: bool,
@@ -463,6 +467,7 @@ impl TerminalPane {
         theme: Rc<Theme>,
         working_dir: PathBuf,
         command: Option<Vec<String>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let log = CommandLog::new(config.commands.max_entries.max(1));
@@ -501,6 +506,8 @@ impl TerminalPane {
             scroll_accum: 0.0,
             bell_until: None,
             search: None,
+            input: LineEdit::default(),
+            last_ime_bounds: None,
             prompt_marks: Vec::new(),
             log,
             last_input_start: None,
@@ -537,6 +544,10 @@ impl TerminalPane {
             for image in pane.images.clear() {
                 cx.drop_image(image, None);
             }
+        })
+        .detach();
+        cx.on_blur(&this.focus_handle, window, |pane, window, cx| {
+            pane.cancel_composition(window, cx);
         })
         .detach();
         this
@@ -697,6 +708,7 @@ impl TerminalPane {
     }
 
     pub fn restart(&mut self, cx: &mut Context<Self>) {
+        self.input = LineEdit::default();
         self.session = None;
         // The new shell starts from an empty grid; so does the store.
         let stale = self.images.clear();
@@ -1275,7 +1287,8 @@ impl TerminalPane {
         self.vi.as_ref().and_then(|v| v.count)
     }
 
-    fn copy_mode(&mut self, _: &CopyMode, _window: &mut Window, cx: &mut Context<Self>) {
+    fn copy_mode(&mut self, _: &CopyMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_composition(window, cx);
         if self.vi.is_some() {
             self.exit_copy_mode(cx);
         } else if let Err(reason) = self.enter_copy_mode(cx) {
@@ -1555,7 +1568,7 @@ impl TerminalPane {
                     Direction::Left
                 };
                 self.search = Some(SearchState {
-                    query: String::new(),
+                    query: LineEdit::default(),
                     current: None,
                     invalid: false,
                     vi_direction: Some(direction),
@@ -1998,8 +2011,25 @@ impl TerminalPane {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input.is_composing() || self.search.as_ref().is_some_and(|s| s.query.is_composing())
+        {
+            let ks = &event.keystroke;
+            if ks.key == "escape" {
+                self.cancel_composition(window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            if !ks.modifiers.control && !ks.modifiers.platform && !ks.modifiers.function {
+                cx.stop_propagation();
+                return;
+            }
+            self.cancel_composition(window, cx);
+        }
         if self.search.is_some() {
+            if cfg!(target_os = "macos") && line_edit::is_text_key(&event.keystroke) {
+                return;
+            }
             self.handle_search_key(event, cx);
             cx.stop_propagation();
             return;
@@ -2018,16 +2048,13 @@ impl TerminalPane {
         let Some(session) = &self.session else { return };
         let mode = *session.term.lock().mode();
         let option_as_meta = self.config.shell.option_as_meta;
+        if keys::uses_text_input(&event.keystroke, option_as_meta) {
+            return;
+        }
         if let Some(bytes) = keys::to_bytes(&event.keystroke, &mode, option_as_meta) {
-            if self.broadcast {
-                cx.emit(TerminalEvent::Input(bytes.clone()));
-            }
-            session.write_input(bytes);
-            let mut term = session.term.lock();
-            // Typing snaps you out of scrollback.
-            if term.grid().display_offset() != 0 {
-                term.scroll_display(Scroll::Bottom);
-            }
+            self.send_input(bytes, cx);
+            let Some(session) = &self.session else { return };
+            let term = session.term.lock();
             // Record a prompt mark: the row where Enter was pressed is (about
             // to be) a completed prompt line — the anchor cmd-up jumps to.
             // Once the shell integration's A markers are flowing they are
@@ -2044,21 +2071,77 @@ impl TerminalPane {
             } else {
                 drop(term);
             }
-            self.last_input = Instant::now();
-            self.blink_show = true;
             cx.stop_propagation();
+        }
+    }
+
+    fn send_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+        if self.broadcast {
+            cx.emit(TerminalEvent::Input(bytes.clone()));
+        }
+        session.write_input(bytes);
+        let mut term = session.term.lock();
+        if term.grid().display_offset() != 0 {
+            term.scroll_display(Scroll::Bottom);
+        }
+        drop(term);
+        self.last_input = Instant::now();
+        self.blink_show = true;
+        cx.notify();
+    }
+
+    fn terminal_input(&mut self) -> Option<&mut LineEdit> {
+        (self.search.is_none()
+            && self.vi.is_none()
+            && self.child_exited.is_none()
+            && self.session.is_some())
+        .then_some(&mut self.input)
+    }
+
+    fn input_changed(&mut self, cx: &mut Context<Self>) {
+        // AppKit can unmark when cancelling; only insertText commits to the PTY.
+        if !self.input.is_composing() {
+            self.input = LineEdit::default();
+        }
+        if let Some(session) = &self.session {
+            session.term.lock().scroll_display(Scroll::Bottom);
+        }
+        cx.notify();
+    }
+
+    fn input_committed(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.input.take_committed() {
+            self.send_input(text.into_bytes(), cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn cancel_composition(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let terminal = self.input.cancel_composition();
+        let search = self
+            .search
+            .as_mut()
+            .is_some_and(|s| s.query.cancel_composition());
+        if terminal || search {
+            line_edit::discard_marked_text(window, cx);
+            if search {
+                self.search_query_changed(cx);
+            }
             cx.notify();
         }
     }
 
     // --- Scrollback search ---
 
-    fn toggle_search(&mut self, _: &Search, _window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_search(&mut self, _: &Search, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_composition(window, cx);
         if self.search.is_some() {
             self.close_search(cx);
         } else {
             self.search = Some(SearchState {
-                query: String::new(),
+                query: LineEdit::default(),
                 current: None,
                 invalid: false,
                 vi_direction: None,
@@ -2149,29 +2232,33 @@ impl TerminalPane {
                 self.run_search(direction, true, cx);
                 return;
             }
-            "backspace" => {
-                if let Some(state) = &mut self.search {
-                    if state.query.pop().is_none() {
-                        self.close_search(cx);
-                        return;
-                    }
-                    state.current = None;
-                }
-                self.run_search(vi_direction.unwrap_or(Direction::Left), false, cx);
+            "backspace"
+                if self
+                    .search
+                    .as_ref()
+                    .is_some_and(|s| s.query.text.is_empty()) =>
+            {
+                self.close_search(cx);
                 return;
             }
             _ => {}
         }
-        if ks.modifiers.platform || ks.modifiers.control {
-            return;
+        if self.search.as_mut().is_some_and(|s| s.query.handle(ks)) {
+            self.search_query_changed(cx);
         }
-        if let Some(key_char) = ks.key_char.clone()
-            && let Some(state) = &mut self.search
-        {
-            state.query.push_str(&key_char);
+    }
+
+    fn search_input(&mut self) -> Option<&mut LineEdit> {
+        self.search.as_mut().map(|s| &mut s.query)
+    }
+
+    fn search_query_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = &mut self.search {
             state.current = None;
-            self.run_search(vi_direction.unwrap_or(Direction::Left), false, cx);
+            let direction = state.vi_direction.unwrap_or(Direction::Left);
+            self.run_search(direction, false, cx);
         }
+        cx.notify();
     }
 
     /// Enter in a copy-mode search: park the vi cursor on the current match
@@ -2191,8 +2278,8 @@ impl TerminalPane {
                 term.vi_goto_point(start);
             }
         }
-        if !state.query.is_empty() && !state.invalid {
-            self.last_search = Some((self.search_options.pattern(&state.query), direction));
+        if !state.query.text.is_empty() && !state.invalid {
+            self.last_search = Some((self.search_options.pattern(&state.query.text), direction));
         }
         cx.notify();
     }
@@ -2202,14 +2289,14 @@ impl TerminalPane {
         let Some(state) = &mut self.search else {
             return;
         };
-        if state.query.is_empty() {
+        if state.query.text.is_empty() {
             state.current = None;
             state.invalid = false;
             session.term.lock().selection = None;
             cx.notify();
             return;
         }
-        let pattern = self.search_options.pattern(&state.query);
+        let pattern = self.search_options.pattern(&state.query.text);
         let Ok(mut regex) = RegexSearch::new(&pattern) else {
             // A half-typed regex like `foo(`: say so rather than silently
             // matching nothing.
@@ -2304,6 +2391,11 @@ impl TerminalPane {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
+        if let Some(query) = self.search_input() {
+            query.insert(&text);
+            self.search_query_changed(cx);
+            return;
+        }
         self.paste_text(text, cx);
     }
 
@@ -2329,10 +2421,21 @@ impl TerminalPane {
     }
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(query) = self.search_input() {
+            if let Some(text) = query.selected_text().map(str::to_owned) {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            return;
+        }
         self.copy_selection(cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(query) = self.search_input() {
+            query.select_all();
+            cx.notify();
+            return;
+        }
         let Some(session) = &self.session else { return };
         let mut term = session.term.lock();
         let top = GridPoint::new(term.topmost_line(), Column(0));
@@ -2462,6 +2565,7 @@ impl TerminalPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_composition(window, cx);
         window.focus(&self.focus_handle);
         let Some((point, side, col, row)) = self.grid_point(event.position) else {
             return;
@@ -2996,12 +3100,13 @@ impl Render for TerminalPane {
                     "⏎ go  esc"
                 } else if search.current.is_some() {
                     "⏎ older  ⇧⏎ newer  esc"
-                } else if search.query.is_empty() {
+                } else if search.query.text.is_empty() {
                     "type to search"
                 } else {
                     "no match"
                 };
-                let ok = (search.current.is_some() || search.query.is_empty()) && !search.invalid;
+                let ok =
+                    (search.current.is_some() || search.query.text.is_empty()) && !search.invalid;
                 let prefix = match search.vi_direction {
                     Some(Direction::Left) => "?",
                     _ => "/",
@@ -3036,6 +3141,7 @@ impl Render for TerminalPane {
                         .px_3()
                         .py_1()
                         .rounded_md()
+                        .max_w_full()
                         .bg(theme.ansi[0])
                         .border_1()
                         .border_color(if ok { theme.ansi[4] } else { theme.ansi[1] })
@@ -3044,7 +3150,19 @@ impl Render for TerminalPane {
                         .gap_2()
                         .items_center()
                         .text_size(gpui::px(12.0))
-                        .child(format!("{prefix}{}", search.query))
+                        .child(prefix)
+                        .child(
+                            line_edit::render(
+                                &search.query,
+                                "",
+                                &theme,
+                                &self.focus_handle,
+                                cx,
+                                Self::search_input,
+                                Self::search_query_changed,
+                            )
+                            .min_w(gpui::px(80.0)),
+                        )
                         .child(div().text_color(dim).child(hint))
                         // The toggles, as chips: lit when on, clickable.
                         .child(chip(0, ".*", search_options.regex))

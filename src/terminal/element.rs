@@ -21,6 +21,7 @@ use super::placeholder::{self, ImageCell};
 use super::session::TermSize;
 use crate::config::Theme;
 use crate::config::schema::{FontWeightName, UnfocusedCursor};
+use crate::line_edit::TextInputHandler;
 
 /// One cell copied out of the grid while the term lock is held.
 struct CellSnap {
@@ -72,6 +73,7 @@ pub struct GridLayout {
     selection_quads: Vec<PaintQuad>,
     lines: Vec<(usize, ShapedLine)>,
     cursor: Option<CursorLayout>,
+    input: Option<(Bounds<Pixels>, ShapedLine)>,
 }
 
 pub struct TerminalElement {
@@ -222,6 +224,60 @@ impl Element for TerminalElement {
                 CursorShape::Hidden => {}
             }
         }
+        if let Some((input_bounds, line)) = &layout.input {
+            let (focus, cursor, selection, composing, theme) = {
+                let pane = self.pane.read(cx);
+                (
+                    pane.focus_handle.clone(),
+                    pane.input.cursor_byte(),
+                    pane.input.selection(),
+                    pane.input.is_composing(),
+                    pane.theme().clone(),
+                )
+            };
+            let positions = line.clone();
+            let indices = line.clone();
+            let origin = input_bounds.origin;
+            window.handle_input(
+                &focus,
+                TextInputHandler {
+                    view: self.pane.clone(),
+                    focus: focus.clone(),
+                    get: TerminalPane::terminal_input,
+                    changed: TerminalPane::input_changed,
+                    committed: TerminalPane::input_committed,
+                    position: Box::new(move |index| {
+                        Some(point(origin.x + positions.x_for_index(index), origin.y))
+                    }),
+                    index: Box::new(move |point| {
+                        Some(indices.closest_index_for_x(point.x - origin.x))
+                    }),
+                    line_height,
+                },
+                cx,
+            );
+            if composing {
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    window.paint_quad(fill(*input_bounds, theme.background));
+                    if let Some(selection) = selection {
+                        let x = line.x_for_index(selection.start);
+                        let width = line.x_for_index(selection.end) - x;
+                        window.paint_quad(fill(
+                            Bounds::new(point(origin.x + x, origin.y), size(width, line_height)),
+                            theme.selection_bg,
+                        ));
+                    }
+                    line.paint(origin, line_height, window, cx).ok();
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(origin.x + line.x_for_index(cursor), origin.y),
+                            size(px(1.5), line_height),
+                        ),
+                        theme.cursor,
+                    ));
+                });
+            }
+        }
     }
 }
 
@@ -316,7 +372,11 @@ fn layout_grid(
     if columns_changed {
         // A paged preview was laid out for the old width: render it again
         // and have less reload the file (`R`).
-        if let Some(code) = pane.preview_render.as_ref().and_then(|render| render(columns)) {
+        if let Some(code) = pane
+            .preview_render
+            .as_ref()
+            .and_then(|render| render(columns))
+        {
             pane.preview_code = code;
             if let Some(session) = &pane.session {
                 session.write_input(b"R".as_slice());
@@ -342,6 +402,7 @@ fn layout_grid(
         selection_quads: Vec::new(),
         lines: Vec::with_capacity(screen_lines),
         cursor: None,
+        input: None,
     };
     let Some(session) = &pane.session else {
         pane.last_layout = Some(super::LastLayout {
@@ -691,6 +752,45 @@ fn layout_grid(
         });
     }
 
+    if cfg!(target_os = "macos") && focused && pane.terminal_input().is_some() {
+        let text: SharedString = pane.input.text.clone().into();
+        let run = TextRun {
+            len: text.len(),
+            font: base_font(pane, false, false),
+            color: theme.foreground,
+            background_color: None,
+            underline: Some(UnderlineStyle {
+                color: Some(theme.foreground),
+                thickness: px(1.0),
+                wavy: false,
+            }),
+            strikethrough: None,
+        };
+        let line = text_system.shape_line(text, font_size, &[run], None);
+        let cursor_x = origin.x + px(cursor.point.column.0 as f32 * cell_width);
+        let caret_x = line.x_for_index(pane.input.cursor_byte());
+        let right = bounds.right() - px(pad_x);
+        let x = cursor_x - (cursor_x + caret_x + px(1.5) - right).max(px(0.0));
+        let y = origin.y + px(cursor_row.clamp(0, screen_lines as i32 - 1) as f32 * cell_height);
+        let input_bounds = Bounds::new(point(x, y), size(line.width + px(1.5), px(cell_height)));
+        if pane.input.is_composing() {
+            layout.cursor = None;
+        }
+        layout.input = Some((input_bounds, line));
+    }
+    let ime_bounds = layout.input.as_ref().map(|(bounds, line)| {
+        Bounds::new(
+            point(
+                bounds.origin.x + line.x_for_index(pane.input.cursor_byte()),
+                bounds.origin.y,
+            ),
+            size(px(1.5), px(cell_height)),
+        )
+    });
+    if pane.last_ime_bounds != ime_bounds {
+        pane.last_ime_bounds = ime_bounds;
+        window.invalidate_character_coordinates();
+    }
     layout
 }
 

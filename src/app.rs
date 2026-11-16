@@ -773,7 +773,8 @@ impl OmniPTY {
             .or_else(home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
 
-        let tree = cx.new(|cx| FileTree::new(cwd.clone(), config.clone(), theme.clone(), cx));
+        let tree =
+            cx.new(|cx| FileTree::new(cwd.clone(), config.clone(), theme.clone(), window, cx));
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(&tree, window, Self::on_tree_event));
@@ -890,6 +891,10 @@ impl OmniPTY {
             _config_watcher: config_watcher,
             _subscriptions: subscriptions,
         };
+        cx.on_blur(&this.picker_focus, window, |this, window, cx| {
+            this.cancel_overlay_composition(window, cx);
+        })
+        .detach();
         // The escape hatches for a startup command that wedges the app:
         // a flag on the command line, or shift held while it launches.
         // Neither depends on any file the app writes.
@@ -1157,7 +1162,7 @@ impl OmniPTY {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
         let (config, theme) = (self.config.clone(), self.theme.clone());
-        let pane = cx.new(|cx| TerminalPane::new(config, theme, cwd, command, cx));
+        let pane = cx.new(|cx| TerminalPane::new(config, theme, cwd, command, window, cx));
         let tree_root = self.tree.read(cx).root.clone();
         pane.update(cx, |t, _| t.tree_root = Some(tree_root));
         let subscription = cx.subscribe_in(&pane, window, Self::on_terminal_event);
@@ -2711,6 +2716,7 @@ impl OmniPTY {
 
     /// Dismiss whichever overlay is open and hand focus back to where it was.
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let Some(overlay) = self.overlay.take() else {
             return;
         };
@@ -2731,6 +2737,9 @@ impl OmniPTY {
     }
 
     fn overlay_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.overlay_query_mut().is_some_and(|q| q.is_composing()) {
+            return;
+        }
         match &self.overlay {
             Some(Overlay::ThemePicker(_)) => self.picker_move(delta, cx),
             Some(Overlay::Palette(_)) => self.palette_move(delta, cx),
@@ -2749,6 +2758,9 @@ impl OmniPTY {
     }
 
     fn overlay_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay_query_mut().is_some_and(|q| q.is_composing()) {
+            return;
+        }
         match &self.overlay {
             Some(Overlay::ThemePicker(_)) => self.picker_confirm(window, cx),
             Some(Overlay::Palette(_)) => self.palette_confirm(window, cx),
@@ -2797,6 +2809,10 @@ impl OmniPTY {
     }
 
     fn overlay_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay_query_mut().is_some_and(|q| q.is_composing()) {
+            self.cancel_overlay_composition(window, cx);
+            return;
+        }
         match &self.overlay {
             Some(Overlay::ThemePicker(_)) => self.picker_cancel(window, cx),
             Some(
@@ -2828,6 +2844,16 @@ impl OmniPTY {
         }
     }
 
+    fn cancel_overlay_composition(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self
+            .overlay_query_mut()
+            .is_some_and(LineEdit::cancel_composition)
+        {
+            line_edit::discard_marked_text(window, cx);
+            self.overlay_query_changed(cx);
+        }
+    }
+
     // --- Startup commands ---
 
     /// Ask what one pane should run when its workspace is restored.
@@ -2848,6 +2874,7 @@ impl OmniPTY {
             None => (last.unwrap_or_default(), OnExit::default()),
         };
         let buffer = LineEdit::new(buffer);
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::StartupCommand(StartupCommandState {
             pane,
@@ -2896,6 +2923,7 @@ impl OmniPTY {
 
     /// Every pane in a workspace with its command, editable in one place.
     fn open_startup_editor(&mut self, wix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let Some(ws) = self.workspaces.get(wix) else {
             return;
         };
@@ -3115,7 +3143,8 @@ impl OmniPTY {
                     .when(is_selected, |d| d.bg(theme.selection_bg.opacity(0.4)))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, _w, cx| {
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                            this.cancel_overlay_composition(window, cx);
                             if let Some(Overlay::StartupEditor(e)) = &mut this.overlay {
                                 e.selected = ix;
                                 cx.notify();
@@ -3219,6 +3248,7 @@ impl OmniPTY {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::Prompt(PromptState {
             title,
@@ -3271,6 +3301,7 @@ impl OmniPTY {
 
     /// The only confirmable action today is close-other-panes; `confirm_run` calls it directly.
     fn open_confirm(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::Confirm(ConfirmState {
             message,
@@ -3289,6 +3320,7 @@ impl OmniPTY {
             self.close_overlay(window, cx);
         }
         let return_focus = self.current_focus_target(window, cx);
+        self.cancel_overlay_composition(window, cx);
         self.overlay = Some(Overlay::About(AboutState { return_focus }));
         window.focus(&self.picker_focus);
         cx.notify();
@@ -3378,7 +3410,15 @@ impl OmniPTY {
         placeholder: &'static str,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        line_edit::render(edit, placeholder, &self.theme, cx, Self::overlay_query_mut)
+        line_edit::render(
+            edit,
+            placeholder,
+            &self.theme,
+            &self.picker_focus,
+            cx,
+            Self::overlay_query_mut,
+            Self::overlay_query_changed,
+        )
     }
 
     fn render_prompt_body(&self, p: &PromptState, cx: &Context<Self>) -> gpui::Div {
@@ -3467,6 +3507,7 @@ impl OmniPTY {
             .position(|n| *n == current)
             .unwrap_or(0);
         let return_focus = self.current_focus_target(window, cx);
+        self.cancel_overlay_composition(window, cx);
         self.overlay = Some(Overlay::ThemePicker(ThemePicker {
             selected,
             scroll: (selected + 1).saturating_sub(PALETTE_ROWS),
@@ -3644,6 +3685,7 @@ impl OmniPTY {
     }
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::Palette(PaletteState {
             query: LineEdit::default(),
@@ -3829,6 +3871,7 @@ impl OmniPTY {
     }
 
     fn open_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::FileFinder(FinderState {
             query: LineEdit::default(),
@@ -4179,6 +4222,7 @@ impl OmniPTY {
     }
 
     fn open_navigator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_overlay_composition(window, cx);
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::Navigator(NavigatorState {
             query: LineEdit::default(),
@@ -4472,6 +4516,7 @@ impl OmniPTY {
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let return_focus = self.current_focus_target(window, cx);
         let items = self.gather_history(cx);
+        self.cancel_overlay_composition(window, cx);
         self.overlay = Some(Overlay::History(HistoryState {
             query: LineEdit::default(),
             items,
