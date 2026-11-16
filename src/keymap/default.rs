@@ -135,7 +135,6 @@ pub static SHARED: &[DefaultBinding] = &[
     b("o", "workspace::open", Workspaces),
     b("a", "workspace::add", Workspaces),
     b("d", "workspace::delete", Workspaces),
-    b("r", "workspace::rename", Workspaces),
     b("p", "workspace::toggle_persist", Workspaces),
     b("e", "workspace::edit_startup_commands", Workspaces),
     b("escape", "workspace::escape", Workspaces),

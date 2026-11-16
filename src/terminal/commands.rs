@@ -2,8 +2,8 @@
 //! ended — built from the OSC 133 markers the shell integration emits.
 //!
 //! Pure data, no GPUI, so the state machine is unit-testable. The pane
-//! feeds it markers; the app reads it for notifications, the tab bar, the
-//! status bar, and history search.
+//! feeds it markers; the app reads it for notifications, the tab bar, and
+//! history search.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -99,11 +99,6 @@ impl CommandLog {
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Command> {
         self.entries.iter_mut().find(|c| c.id == id)
-    }
-
-    /// The command currently executing, if any.
-    pub fn running(&self) -> Option<&Command> {
-        self.running.and_then(|id| self.get(id))
     }
 
     pub fn is_running(&self) -> bool {
@@ -202,7 +197,7 @@ impl CommandLog {
     }
 }
 
-/// `2m14s`, `4.2s`, `380ms` — for status bars and notifications.
+/// `2m14s`, `4.2s`, `380ms` — for notifications and startup messages.
 pub fn format_duration(d: Duration) -> String {
     let secs = d.as_secs_f64();
     if secs < 1.0 {

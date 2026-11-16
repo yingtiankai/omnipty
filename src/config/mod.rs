@@ -233,10 +233,7 @@ preview_in = "tab"            # tab | split — where a markdown preview opens
 # bell = "none"               # none | sound | visual
 # copy_on_select = false      # mouse selection copies to clipboard on release
 
-[status_bar]
-enabled  = true               # native bar showing cwd + git branch/dirty
-position = "bottom"           # top | bottom
-tab      = "number"           # number (2/5) | name — the current-tab chip beside the workspace
+# Legacy [status_bar] settings are accepted but ignored; the status bar was removed.
 
 [tabs]
 enabled      = true           # show the tab bar (View → Toggle Tab Bar flips it for the session)
@@ -252,7 +249,7 @@ on_failure_always   = false   # a non-zero exit notifies regardless of duration
 passthrough_osc9    = true    # let programs post notifications (OSC 9 / OSC 777)
 
 [commands]
-track        = true           # the command log: status bar, tab dots, cmd-r history, gutter
+track        = true           # the command log: tab dots, cmd-r history, gutter
 emit_cmdline = true           # the shell sends each command line to OmniPTY (memory only)
 max_entries  = 500
 

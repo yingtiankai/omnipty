@@ -287,6 +287,7 @@ pub struct LastLayout {
 pub struct TerminalPane {
     pub session: Option<TerminalSession>,
     pub size: TermSize,
+    /// Empty until a program sets an OSC title, or after a title reset.
     pub title: String,
     pub cwd: Option<PathBuf>,
     pub child_exited: Option<Option<i32>>,
@@ -481,7 +482,7 @@ impl TerminalPane {
                 cell_height: 17.0,
                 scale: 1.0,
             },
-            title: "omnipty".into(),
+            title: String::new(),
             cwd: Some(working_dir.clone()),
             child_exited: None,
             focus_handle: cx.focus_handle(),
@@ -710,6 +711,7 @@ impl TerminalPane {
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         self.input = LineEdit::default();
         self.session = None;
+        self.title.clear();
         // The new shell starts from an empty grid; so does the store.
         let stale = self.images.clear();
         self.release_images(stale, cx);
@@ -1022,7 +1024,7 @@ impl TerminalPane {
                 cx.notify();
             }
             AlacEvent::ResetTitle => {
-                self.title = "omnipty".into();
+                self.title.clear();
                 cx.emit(TerminalEvent::TitleChanged);
                 cx.notify();
             }

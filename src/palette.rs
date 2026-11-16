@@ -320,9 +320,15 @@ mod tests {
         assert_eq!(top("pal")[0], "app::palette");
         assert_eq!(top("theme")[0], "app::select_theme");
         assert_eq!(top("eq")[0], "pane::equalize");
-        // Word order the panel titles ("Workspaces: Rename Selected") can't match.
-        assert_eq!(top("rename workspace")[0], "workspace::rename");
+        // Word order the panel title ("Workspaces: Pin / Unpin") can't match.
         assert_eq!(top("pin workspace")[0], "workspace::toggle_persist");
+    }
+
+    #[test]
+    fn removed_workspace_rename_and_status_bar_actions_are_not_offered() {
+        assert!(top("rename workspace").is_empty());
+        assert!(registry::by_id("workspace::rename").is_none());
+        assert!(registry::by_id("app::toggle_status_bar").is_none());
     }
 
     #[test]

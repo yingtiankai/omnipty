@@ -20,8 +20,7 @@ pub struct ForegroundProcess {
 }
 
 impl ForegroundProcess {
-    /// Whether this is an interactive shell rather than a program the
-    /// user ran — shells aren't worth naming in a tab title.
+    /// Whether this is an interactive shell rather than a program the user ran.
     pub fn is_shell(&self) -> bool {
         let name = self.name.trim_start_matches('-');
         matches!(

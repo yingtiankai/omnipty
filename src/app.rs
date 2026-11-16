@@ -13,12 +13,9 @@ use gpui::{
     ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
 
-use crate::config::schema::{
-    CloseLastTab, ColorsConfig, OpenIn, StatusBarPosition, StatusBarTab, TitlebarMode,
-};
+use crate::config::schema::{CloseLastTab, ColorsConfig, OpenIn, TitlebarMode};
 use crate::config::theme::parse_hex;
 use crate::config::{self, Config, Theme};
-use crate::git::{GitStatus, read_git_status};
 use crate::keymap::actions::*;
 use crate::keymap::registry::{self, ActionContext, ActionMeta};
 use crate::keymap::resolve::pretty_keys;
@@ -30,8 +27,7 @@ use crate::palette::{self, PaletteItem};
 use crate::panes::{Axis, Direction, Node, NodePath};
 use crate::startup::{OnExit, StartupCommand};
 use crate::terminal::colors::{blend, translucent};
-use crate::terminal::commands::format_duration;
-use crate::terminal::{LastLayout, TerminalEvent, TerminalPane};
+use crate::terminal::{ForegroundProcess, LastLayout, TerminalEvent, TerminalPane};
 use crate::tree::{FileTree, TreeEvent, TreePrompt};
 use crate::workspaces::{SavedPane, SavedTab, SavedWorkspace};
 
@@ -156,14 +152,21 @@ impl Render for TabDragLabel {
 /// How many closed tabs cmd-shift-t can bring back.
 const CLOSED_TAB_RING: usize = 10;
 
-/// A named collection of tabs — the tmux-session analogue. Temporary by
+/// A collection of tabs — the tmux-session analogue. Temporary by
 /// default; `persist` opts it into surviving restarts (layout + directories,
 /// fresh shells).
 struct Workspace {
+    /// Kept for saved-workspace compatibility; display titles follow the active cwd.
     name: String,
     persist: bool,
     tabs: Vec<TabState>,
     active_tab: usize,
+}
+
+impl Workspace {
+    fn active_id(&self) -> PaneId {
+        self.tabs[self.active_tab].active
+    }
 }
 
 /// A right-click menu on a workspace row: which row, and where to draw it.
@@ -184,7 +187,6 @@ pub const APP_MENU_BUTTON_CLEARANCE: f32 = APP_MENU_BUTTON_LEFT + APP_MENU_BUTTO
 /// Which bar the ☰ menu button floats over, so that bar can pad for it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AppMenuCorner {
-    StatusBar,
     Tree,
     TabBar,
 }
@@ -240,7 +242,6 @@ pub struct OmniPTY {
     translucency: Option<(bool, bool)>,
     toasts: Vec<Toast>,
     next_toast_id: usize,
-    git_status: GitStatus,
     last_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     bounds_save_scheduled: bool,
     overlay: Option<Overlay>,
@@ -252,15 +253,12 @@ pub struct OmniPTY {
     divider_drag: Option<DividerDrag>,
     /// Panes whose focus ring is flashing red after a background failure.
     fail_flash: HashMap<PaneId, Instant>,
-    /// A once-a-second repaint is running for the status bar's elapsed time.
-    ticking: bool,
     /// Notification route keys → the pane a click should focus.
     notification_routes: HashMap<notifications::RouteKey, PaneId>,
     finder_index: Option<FinderIndex>,
     finder_indexing: bool,
     /// Files opened through the finder or cmd-click, newest first.
     recent_files: VecDeque<PathBuf>,
-    status_bar_override: Option<bool>,
     tab_bar_override: Option<bool>,
     update: UpdateState,
     /// Recently closed tabs, newest first, for cmd-shift-t.
@@ -334,7 +332,6 @@ struct StartupRow {
 struct StartupEditorState {
     /// Index of the workspace being edited.
     ws: usize,
-    name: String,
     rows: Vec<StartupRow>,
     selected: usize,
     return_focus: FocusTarget,
@@ -353,8 +350,6 @@ struct PromptState {
 /// tabs, or the workspace list.
 enum PromptAction {
     Tree(TreePrompt),
-    WsAdd,
-    WsRename(usize),
     TabRename(usize),
 }
 
@@ -589,14 +584,27 @@ fn clamp_drawer_width(width: f32, window: f32) -> f32 {
     width.clamp(160.0, (window - 240.0).max(160.0))
 }
 
-/// The name a workspace gets until it's given one: `workspace N`, with the
-/// lowest number no workspace in `names` is using.
+/// A new workspace's on-disk name: `workspace N`, with the lowest free number.
 fn default_ws_name<'a>(names: impl Iterator<Item = &'a str>) -> String {
     let taken: Vec<&str> = names.collect();
     (1..)
         .map(|n| format!("workspace {n}"))
         .find(|name| !taken.contains(&name.as_str()))
         .unwrap()
+}
+
+fn automatic_tab_title(osc_title: &str, foreground: Option<&ForegroundProcess>) -> String {
+    if !osc_title.is_empty() {
+        return osc_title.to_string();
+    }
+    foreground.map_or_else(|| "shell".into(), ForegroundProcess::label)
+}
+
+fn workspace_label(ix: usize, cwd: Option<&Path>, home: Option<&Path>) -> String {
+    let dir = cwd
+        .map(|path| dir_name(path, home))
+        .unwrap_or_else(|| "?".into());
+    format!("{} - {dir}", ix + 1)
 }
 
 /// Where the item at `ix` sits after the one at `from` is moved to `to`.
@@ -806,27 +814,6 @@ impl OmniPTY {
             .detach();
         }
 
-        // Periodic git refresh for the status bar.
-        cx.spawn(async move |this, cx| {
-            loop {
-                let timer = match this.update(cx, |_, cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(3))
-                }) {
-                    Ok(timer) => timer,
-                    Err(_) => break,
-                };
-                timer.await;
-                if this
-                    .update(cx, |this, cx| this.refresh_git_status(cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-
         // Bad [keymap] entries are skipped by `resolve`; report them here so
         // the user learns why a binding didn't take.
         let resolved = Rc::new(keymap::resolve(&config.keymap));
@@ -864,7 +851,6 @@ impl OmniPTY {
             translucency: None,
             toasts: Vec::new(),
             next_toast_id: 0,
-            git_status: GitStatus::default(),
             last_bounds: None,
             bounds_save_scheduled: false,
             overlay: None,
@@ -873,12 +859,10 @@ impl OmniPTY {
             palette_recent: VecDeque::new(),
             divider_drag: None,
             fail_flash: HashMap::new(),
-            ticking: false,
             notification_routes: HashMap::new(),
             finder_index: None,
             finder_indexing: false,
             recent_files: VecDeque::new(),
-            status_bar_override: None,
             tab_bar_override: None,
             update: UpdateState::Idle,
             closed_tabs: VecDeque::new(),
@@ -940,7 +924,6 @@ impl OmniPTY {
             );
             this.expire_toast(id, 30, cx);
         }
-        this.refresh_git_status(cx);
 
         // Auto-check for updates: installed copies only (not cargo run),
         // shortly after launch and then every 6 hours.
@@ -1136,7 +1119,7 @@ impl OmniPTY {
     }
 
     fn active_id(&self) -> PaneId {
-        self.tab().active
+        self.ws().active_id()
     }
 
     fn active_pane(&self) -> gpui::Entity<TerminalPane> {
@@ -1260,7 +1243,6 @@ impl OmniPTY {
         cx.defer(move |cx| {
             tree.update(cx, |tree, cx| tree.set_root(cwd, cx));
         });
-        self.refresh_git_status(cx);
     }
 
     fn focus_pane(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
@@ -1787,27 +1769,6 @@ impl OmniPTY {
         })
     }
 
-    fn refresh_git_status(&mut self, cx: &mut Context<Self>) {
-        if !self.config.status_bar.enabled {
-            return;
-        }
-        let Some(cwd) = self.active_pane().read(cx).cwd.clone() else {
-            return;
-        };
-        let bg = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
-            let status = bg.spawn(async move { read_git_status(&cwd) }).await;
-            this.update(cx, |this, cx| {
-                if this.git_status != status {
-                    this.git_status = status;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     fn save_bounds_debounced(
         &mut self,
         bounds: gpui::Bounds<gpui::Pixels>,
@@ -2287,14 +2248,13 @@ impl OmniPTY {
         self.focus_terminal(Some(window), cx);
     }
 
-    /// Bottom-right stack, newest at the bottom, lifted above the status bar
-    /// when that sits at the bottom. Clicking a toast dismisses it.
-    fn render_toasts(&self, above_status_bar: bool, cx: &Context<Self>) -> gpui::Div {
+    /// Bottom-right stack, newest at the bottom. Clicking a toast dismisses it.
+    fn render_toasts(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         div()
             .absolute()
             .right(px(8.0))
-            .bottom(px(if above_status_bar { 34.0 } else { 8.0 }))
+            .bottom(px(8.0))
             .flex()
             .flex_col()
             .items_end()
@@ -2478,7 +2438,6 @@ impl OmniPTY {
                 }
             }
             TerminalEvent::CommandStarted => {
-                self.start_ticker(cx);
                 cx.notify();
             }
             TerminalEvent::CommandFinished {
@@ -2544,25 +2503,23 @@ impl OmniPTY {
             TerminalEvent::Notice(message) => {
                 self.toast(ToastKind::Info, message.clone(), cx);
             }
-            // Tab titles and the ssh chip follow the foreground process.
+            // Tab titles and SSH pane accents follow the foreground process.
             TerminalEvent::ForegroundChanged => cx.notify(),
             TerminalEvent::CwdChanged(cwd) => {
                 // Background panes change directory too; only the focused one
-                // should move the tree or the status bar.
+                // should move the tree.
                 let is_active = self
                     .panes
                     .get(&self.active_id())
                     .is_some_and(|p| p.entity_id() == emitter.entity_id());
-                if is_active {
-                    if self.config.tree.follow_cwd {
-                        let cwd = cwd.clone();
-                        self.tree.update(cx, |tree, cx| tree.set_root(cwd, cx));
-                    }
-                    self.refresh_git_status(cx);
+                if is_active && self.config.tree.follow_cwd {
+                    let cwd = cwd.clone();
+                    self.tree.update(cx, |tree, cx| tree.set_root(cwd, cx));
                 }
                 // Any pane's cd changes what a persisted workspace should
                 // restore to, focused or not.
                 self.save_workspaces(cx);
+                cx.notify();
             }
         }
     }
@@ -2622,40 +2579,6 @@ impl OmniPTY {
             self.save_workspaces(cx);
         }
         true
-    }
-
-    /// Repaint once a second while any pane has a running command, so the
-    /// status bar's elapsed time ticks. Stops itself when nothing runs.
-    fn start_ticker(&mut self, cx: &mut Context<Self>) {
-        if self.ticking {
-            return;
-        }
-        self.ticking = true;
-        cx.spawn(async move |this, cx| {
-            loop {
-                let timer = match this.update(cx, |_, cx| {
-                    cx.background_executor().timer(Duration::from_secs(1))
-                }) {
-                    Ok(timer) => timer,
-                    Err(_) => break,
-                };
-                timer.await;
-                let keep_going = this
-                    .update(cx, |this, cx| {
-                        cx.notify();
-                        let running = this.panes.values().any(|p| p.read(cx).log.is_running());
-                        if !running {
-                            this.ticking = false;
-                        }
-                        running
-                    })
-                    .unwrap_or(false);
-                if !keep_going {
-                    break;
-                }
-            }
-        })
-        .detach();
     }
 
     fn tree_focus(&self, cx: &Context<Self>) -> FocusHandle {
@@ -2910,11 +2833,12 @@ impl OmniPTY {
     fn after_startup_edit(&mut self, wix: Option<usize>, any_set: bool, cx: &mut Context<Self>) {
         self.save_workspaces(cx);
         if any_set
-            && let Some(ws) = wix.and_then(|w| self.workspaces.get(w))
+            && let Some(wix) = wix
+            && let Some(ws) = self.workspaces.get(wix)
             && !ws.persist
         {
             self.toast(ToastKind::Info,
-                format!("startup command set — pin \"{}\" (p in the workspaces panel) to keep it across restarts", ws.name),
+                format!("startup command set — pin \"{}\" (p in the workspaces panel) to keep it across restarts", self.workspace_title(wix, cx)),
                 cx,
             );
         }
@@ -2967,7 +2891,6 @@ impl OmniPTY {
         let return_focus = self.current_focus_target(window, cx);
         self.overlay = Some(Overlay::StartupEditor(StartupEditorState {
             ws: wix,
-            name: ws.name.clone(),
             rows,
             selected: 0,
             return_focus,
@@ -3125,7 +3048,10 @@ impl OmniPTY {
             .border_b_1()
             .border_color(border)
             .text_color(blend(theme.foreground, theme.background, 0.3))
-            .child(format!("startup commands — {}", e.name));
+            .child(format!(
+                "startup commands — {}",
+                self.workspace_title(e.ws, cx)
+            ));
         let mut list = div().flex().flex_col().p_1().gap(px(1.0));
         for (ix, row) in e.rows.iter().enumerate() {
             let is_selected = ix == e.selected;
@@ -3227,17 +3153,6 @@ impl OmniPTY {
         );
     }
 
-    fn open_ws_rename(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ws) = self.workspaces.get(ix) else {
-            return;
-        };
-        let (title, buffer) = (
-            format!("Rename {}", ws.name),
-            LineEdit::new(ws.name.clone()),
-        );
-        self.open_prompt(title, "", buffer, PromptAction::WsRename(ix), window, cx);
-    }
-
     /// The prompt modal: one line of text, titled with what it's for.
     fn open_prompt(
         &mut self,
@@ -3283,17 +3198,6 @@ impl OmniPTY {
             PromptAction::Tree(prompt) => {
                 self.tree
                     .update(cx, |tree, cx| tree.apply_prompt(prompt, text, cx));
-            }
-            PromptAction::WsAdd => {
-                self.new_workspace(window, cx);
-                self.ws_mut().name = text;
-                self.save_workspaces(cx);
-            }
-            PromptAction::WsRename(ix) => {
-                if let Some(ws) = self.workspaces.get_mut(ix) {
-                    ws.name = text;
-                    self.save_workspaces(cx);
-                }
             }
         }
         cx.notify();
@@ -4242,7 +4146,7 @@ impl OmniPTY {
             .iter()
             .enumerate()
             .map(|(wix, ws)| navigator::WorkspaceSnap {
-                name: ws.name.clone(),
+                name: self.workspace_title(wix, cx),
                 active: wix == self.active_ws,
                 tabs: ws
                     .tabs
@@ -5206,8 +5110,7 @@ impl OmniPTY {
 
     // --- Tabs ---
 
-    /// A user-set name wins; then the foreground program (`vim`, `cargo`,
-    /// `ssh prod-web`) when one is running; else the directory.
+    /// A user-set name wins; then OSC title; then the foreground program.
     fn tab_title(&self, tab: &TabState, cx: &Context<Self>) -> String {
         if let Some(title) = &tab.title {
             return title.clone();
@@ -5216,15 +5119,7 @@ impl OmniPTY {
             return "shell".into();
         };
         let pane = pane.read(cx);
-        if let Some(fg) = &pane.foreground
-            && !fg.is_shell()
-        {
-            return fg.label();
-        }
-        match &pane.cwd {
-            Some(p) => dir_name(p, home_dir().as_deref()),
-            None => "shell".into(),
-        }
+        automatic_tab_title(&pane.title, pane.foreground.as_ref())
     }
 
     fn new_tab_cwd(&self, cx: &Context<Self>) -> PathBuf {
@@ -5600,6 +5495,12 @@ impl OmniPTY {
 
     // --- Workspaces ---
 
+    fn workspace_title(&self, ix: usize, cx: &Context<Self>) -> String {
+        let id = self.workspaces[ix].active_id();
+        let cwd = self.panes.get(&id).and_then(|p| p.read(cx).cwd.as_deref());
+        workspace_label(ix, cwd, home_dir().as_deref())
+    }
+
     fn next_ws_name(&self) -> String {
         default_ws_name(self.workspaces.iter().map(|w| w.name.as_str()))
     }
@@ -5734,10 +5635,14 @@ impl OmniPTY {
         cx.notify();
     }
 
-    fn ws_footer_text(&self) -> Option<String> {
-        let name = &self.workspaces.get(self.ws_selected)?.name;
-        self.ws_confirm_delete
-            .then(|| format!("delete {name}? (y/n)"))
+    fn ws_footer_text(&self, cx: &Context<Self>) -> Option<String> {
+        self.workspaces.get(self.ws_selected)?;
+        self.ws_confirm_delete.then(|| {
+            format!(
+                "delete {}? (y/n)",
+                self.workspace_title(self.ws_selected, cx)
+            )
+        })
     }
 
     fn render_workspace_panel(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
@@ -5764,7 +5669,8 @@ impl OmniPTY {
             }
             let mut active_bg = accent;
             active_bg.a = 0.16;
-            let (drag_name, pinned): (gpui::SharedString, _) = (w.name.clone().into(), w.persist);
+            let title = self.workspace_title(ix, cx);
+            let (drag_name, pinned): (gpui::SharedString, _) = (title.clone().into(), w.persist);
             let font: gpui::SharedString = self.config.font.family.primary().to_string().into();
             let drag_theme = self.theme.clone();
             // The row spans the drawer, less its border and its own margins.
@@ -5817,7 +5723,7 @@ impl OmniPTY {
                     .on_drop(cx.listener(move |this, drag: &WsDrag, _window, cx| {
                         this.move_workspace(drag.ix, ix, cx);
                     }))
-                    .child(div().flex_1().truncate().child(w.name.clone()))
+                    .child(div().flex_1().truncate().child(title))
                     .when(self.workspace_has_startup(w, cx), |d| {
                         // Has startup commands, visible without opening anything.
                         d.child(div().flex_none().text_color(dim).child("▸"))
@@ -5874,22 +5780,11 @@ impl OmniPTY {
                 this.select_workspace(ix, window, cx);
             }))
             .on_action(cx.listener(|this, _: &WsAdd, window, cx| {
-                this.open_prompt(
-                    "New workspace".into(),
-                    "",
-                    LineEdit::default(),
-                    PromptAction::WsAdd,
-                    window,
-                    cx,
-                );
+                this.new_workspace(window, cx);
             }))
             .on_action(cx.listener(|this, _: &WsDelete, _w, cx| {
                 this.ws_confirm_delete = true;
                 cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &WsRename, window, cx| {
-                let ix = this.ws_selected;
-                this.open_ws_rename(ix, window, cx);
             }))
             .on_action(cx.listener(|this, _: &WsTogglePersist, _w, cx| {
                 if let Some(ws) = this.workspaces.get_mut(this.ws_selected) {
@@ -5939,7 +5834,7 @@ impl OmniPTY {
                     ),
             )
             .child(list)
-            .when_some(self.ws_footer_text(), |d, text| {
+            .when_some(self.ws_footer_text(cx), |d, text| {
                 d.child(
                     div()
                         .flex_none()
@@ -5969,7 +5864,7 @@ impl OmniPTY {
 
         // Keep the menu on screen when the click lands near an edge.
         let viewport = window.viewport_size();
-        let (menu_w, menu_h) = (200.0, 130.0);
+        let (menu_w, menu_h) = (200.0, 104.0);
         let x = f32::from(menu.position.x).min(f32::from(viewport.width) - menu_w - 8.0);
         let y = f32::from(menu.position.y).min(f32::from(viewport.height) - menu_h - 8.0);
 
@@ -6022,15 +5917,6 @@ impl OmniPTY {
                         gpui::MouseButton::Left,
                         |_: &gpui::MouseDownEvent, _w, cx| cx.stop_propagation(),
                     )
-                    .child(item("ws-menu-rename", "Rename".into()).on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                            this.ws_context_menu = None;
-                            this.ws_selected = ix;
-                            window.focus(&this.ws_focus);
-                            this.open_ws_rename(ix, window, cx);
-                        }),
-                    ))
                     .child(
                         item(
                             "ws-menu-pin",
@@ -6081,22 +5967,16 @@ impl OmniPTY {
             )
     }
 
-    /// Linux: which bar the ☰ menu button floats over. A top status bar
-    /// spans the full width, so it is the corner whenever it's shown; then
-    /// the drawer's header; then the tab bar. With all three hidden the
-    /// button floats over the terminal's padding. `None` on macOS, where
+    /// Linux: which bar the ☰ menu button floats over: the drawer's header,
+    /// then the tab bar. With both hidden the button floats over the
+    /// terminal's padding. `None` on macOS, where
     /// the real menu bar does this job.
     fn app_menu_corner(&self) -> Option<AppMenuCorner> {
         if !cfg!(target_os = "linux") {
             return None;
         }
-        let status_bar = self
-            .status_bar_override
-            .unwrap_or(self.config.status_bar.enabled);
         let tab_bar = self.tab_bar_override.unwrap_or(self.config.tabs.enabled);
-        if status_bar && self.config.status_bar.position == StatusBarPosition::Top {
-            Some(AppMenuCorner::StatusBar)
-        } else if self.drawer_visible {
+        if self.drawer_visible {
             Some(AppMenuCorner::Tree)
         } else if tab_bar {
             Some(AppMenuCorner::TabBar)
@@ -6322,192 +6202,6 @@ impl OmniPTY {
                     .child(items),
             )
     }
-
-    fn render_status_bar(&self, cx: &Context<Self>) -> gpui::Div {
-        let theme = &self.theme;
-        let dim = blend(theme.foreground, theme.background, 0.35);
-        let bar_bg = translucent(
-            blend(theme.background, gpui::black(), 0.25),
-            self.config.window.opacity,
-        );
-        // Linux: on top, this bar is the corner the ☰ menu button floats over.
-        let under_menu_button = self.app_menu_corner() == Some(AppMenuCorner::StatusBar);
-        let cwd_text = self
-            .active_pane()
-            .read(cx)
-            .cwd
-            .as_ref()
-            .map(|cwd| pretty_path(cwd, home_dir().as_deref()))
-            .unwrap_or_default();
-        let git = &self.git_status;
-
-        div()
-            .flex_none()
-            .h(px(26.0))
-            .px_3()
-            .when(under_menu_button, |d| d.pl(px(APP_MENU_BUTTON_CLEARANCE)))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .bg(bar_bg)
-            .text_size(px(12.0))
-            .text_color(dim)
-            .child({
-                // Which workspace you're in, next to the directory.
-                let accent = theme.ansi[4];
-                let mut chip_bg = accent;
-                chip_bg.a = 0.16;
-                div()
-                    .flex_none()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(chip_bg)
-                    .text_color(accent)
-                    .child(self.ws().name.clone())
-            })
-            .child({
-                // Which tab, for when the tab bar is hidden. Pulled left to
-                // sit against the workspace chip as one "where am I" unit.
-                let color = theme.ansi[6];
-                let mut chip_bg = color;
-                chip_bg.a = 0.16;
-                let label = match self.config.status_bar.tab {
-                    StatusBarTab::Number => {
-                        format!("{}/{}", self.ws().active_tab + 1, self.ws().tabs.len())
-                    }
-                    StatusBarTab::Name => self.tab_title(self.tab(), cx),
-                };
-                div()
-                    .flex_none()
-                    .ml(px(-6.0))
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(chip_bg)
-                    .text_color(color)
-                    .child(label)
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .overflow_hidden()
-                    .child(div().text_color(theme.ansi[4]).child("\u{f07b}"))
-                    .child(cwd_text),
-            )
-            .when(self.tab().broadcast, |d| {
-                // Loud on purpose: `rm -rf build` into four panes is not a
-                // mistake anyone forgives a subtle dot for.
-                d.child(
-                    div()
-                        .flex_none()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(theme.ansi[1])
-                        .text_color(theme.background)
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child("⇶ BROADCAST"),
-                )
-            })
-            .when(self.tab().zoomed.is_some(), |d| {
-                // A zoomed pane looks exactly like a one-pane tab otherwise.
-                let mut chip_bg = theme.ansi[3];
-                chip_bg.a = 0.18;
-                d.child(
-                    div()
-                        .flex_none()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(chip_bg)
-                        .text_color(theme.ansi[3])
-                        .child(format!("⤢ zoom · {} panes", self.tab().layout.len())),
-                )
-            })
-            .when_some(self.active_pane().read(cx).vi_mode(), |d, kind| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(theme.ansi[3])
-                        .text_color(theme.background)
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child(kind.label()),
-                )
-            })
-            .when_some(
-                self.active_pane().read(cx).ssh_host().map(str::to_string),
-                |d, host| {
-                    // Where you are, when it isn't this machine. A configured
-                    // host accent colours the chip too.
-                    let color = self
-                        .config
-                        .ssh
-                        .accent_for(&host)
-                        .and_then(parse_hex)
-                        .unwrap_or(theme.ansi[5]);
-                    let mut chip_bg = color;
-                    chip_bg.a = 0.18;
-                    d.child(
-                        div()
-                            .flex_none()
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .bg(chip_bg)
-                            .text_color(color)
-                            .child(format!("ssh: {host}")),
-                    )
-                },
-            )
-            .child({
-                // What the focused pane is doing: elapsed time while a
-                // command runs; the last failure once it's done. Success is
-                // silent, like the prompt's exit segment.
-                let log = &self.active_pane().read(cx).log;
-                if let Some(cmd) = log.running() {
-                    div().flex_none().text_color(theme.ansi[4]).child(format!(
-                        "⟳ {}  {}",
-                        cmd.label(),
-                        format_duration(cmd.duration())
-                    ))
-                } else if let Some(cmd) = log.last_finished().filter(|c| c.failed()) {
-                    div().flex_none().text_color(theme.ansi[1]).child(format!(
-                        "✗ {} · {}",
-                        cmd.exit.unwrap_or(1),
-                        format_duration(cmd.duration())
-                    ))
-                } else {
-                    div().flex_none()
-                }
-            })
-            .child(div().flex_1())
-            .when_some(git.branch.clone(), |d, branch| {
-                let branch_color = if git.dirty {
-                    theme.ansi[3]
-                } else {
-                    theme.ansi[2]
-                };
-                let mut label = format!("\u{e0a0} {branch}");
-                if git.dirty {
-                    label.push_str(" ●");
-                }
-                if git.ahead > 0 {
-                    label.push_str(&format!(" ⇡{}", git.ahead));
-                }
-                if git.behind > 0 {
-                    label.push_str(&format!(" ⇣{}", git.behind));
-                }
-                d.child(div().text_color(branch_color).child(label))
-            })
-    }
 }
 
 /// Every file under `root` as root-relative strings, shallow first, with
@@ -6559,7 +6253,7 @@ pub(crate) fn pretty_path(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// A directory's short name for tab titles and the like: `~` for home,
+/// A directory's short name for workspace titles and the like: `~` for home,
 /// the last component otherwise, `/` for the root.
 pub(crate) fn dir_name(path: &Path, home: Option<&Path>) -> String {
     if home.is_some_and(|h| h == path) {
@@ -6767,7 +6461,7 @@ impl Render for OmniPTY {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Focus can move without going through our actions — clicking a pane
         // is the common case — so adopt whatever is actually focused before
-        // anything reads `active`. Otherwise close/split/status-bar all act on
+        // anything reads `active`. Otherwise close/split/titles all act on
         // a stale pane. Focus on the drawer leaves the last active pane alone.
         let focused_pane = self.tab().layout.leaves().into_iter().find(|id| {
             self.panes
@@ -6813,19 +6507,16 @@ impl Render for OmniPTY {
             set_window_blur(window, see_through && blur);
         }
 
-        let title = self.active_pane().read(cx).title.clone();
-        window.set_window_title(&title);
+        let pane = self.active_pane();
+        let title = &pane.read(cx).title;
+        window.set_window_title(if title.is_empty() { "omnipty" } else { title });
 
         let bounds = window.bounds();
         if self.last_bounds != Some(bounds) {
             self.save_bounds_debounced(bounds, cx);
         }
 
-        let status_bar = self
-            .status_bar_override
-            .unwrap_or(self.config.status_bar.enabled);
         let tab_bar = self.tab_bar_override.unwrap_or(self.config.tabs.enabled);
-        let bar_on_top = self.config.status_bar.position == StatusBarPosition::Top;
 
         // Linux: the drawer pads its header for the ☰ menu button only
         // while it is the bar in the corner.
@@ -7050,13 +6741,6 @@ impl Render for OmniPTY {
             .on_action(|_: &Minimize, window, _cx| window.minimize_window())
             .on_action(|_: &Zoom, window, _cx| window.zoom_window())
             .on_action(|_: &ToggleFullscreen, window, _cx| window.toggle_fullscreen())
-            .on_action(cx.listener(|this, _: &ToggleStatusBar, _w, cx| {
-                let current = this
-                    .status_bar_override
-                    .unwrap_or(this.config.status_bar.enabled);
-                this.status_bar_override = Some(!current);
-                cx.notify();
-            }))
             .on_action(cx.listener(|this, _: &ToggleTabBar, _w, cx| {
                 let current = this.tab_bar_override.unwrap_or(this.config.tabs.enabled);
                 this.tab_bar_override = Some(!current);
@@ -7140,9 +6824,6 @@ impl Render for OmniPTY {
             .on_action(cx.listener(|this, _: &About, window, cx| {
                 this.open_about(window, cx);
             }))
-            .when(status_bar && bar_on_top, |d| {
-                d.child(self.render_status_bar(cx))
-            })
             .child(
                 div()
                     .flex_1()
@@ -7279,10 +6960,7 @@ impl Render for OmniPTY {
                         )
                     }),
             )
-            .when(status_bar && !bar_on_top, |d| {
-                d.child(self.render_status_bar(cx))
-            })
-            .child(self.render_toasts(status_bar && !bar_on_top, cx))
+            .child(self.render_toasts(cx))
             // Linux has no menu bar: the ☰ button in the corner is the
             // same menus as a popover. Painted after the bars so it sits
             // on top of whichever one is there.
@@ -7369,6 +7047,87 @@ impl Render for OmniPTY {
                     d.child(div().absolute().inset_0().bg(shade))
                 },
             )
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn osc_titles_win_over_foreground_processes() {
+        let foreground = ForegroundProcess {
+            name: "codex".into(),
+            ssh_host: None,
+        };
+        for title in ["中文项目", "omnipty", "build — 50%"] {
+            assert_eq!(automatic_tab_title(title, Some(&foreground)), title);
+            assert_eq!(automatic_tab_title(title, None), title);
+        }
+    }
+
+    #[test]
+    fn missing_or_reset_osc_titles_fall_back_to_process_names() {
+        for name in ["codex", "vim", "zsh", "bash"] {
+            let foreground = ForegroundProcess {
+                name: name.into(),
+                ssh_host: None,
+            };
+            assert_eq!(automatic_tab_title("", Some(&foreground)), name);
+        }
+        let ssh = ForegroundProcess {
+            name: "ssh".into(),
+            ssh_host: Some("prod-web".into()),
+        };
+        assert_eq!(automatic_tab_title("", Some(&ssh)), "ssh prod-web");
+        assert_eq!(automatic_tab_title("", None), "shell");
+    }
+
+    #[test]
+    fn workspace_labels_use_a_one_based_number_and_directory_basename() {
+        let home = Some(Path::new("/Users/alice"));
+        for (ix, path, expected) in [
+            (0, "/Users/alice/Desktop/omnipty", "1 - omnipty"),
+            (1, "/Users/alice/中文项目", "2 - 中文项目"),
+            (2, "/Users/alice", "3 - ~"),
+            (9, "/", "10 - /"),
+        ] {
+            assert_eq!(workspace_label(ix, Some(Path::new(path)), home), expected);
+        }
+        assert_eq!(workspace_label(0, None, home), "1 - ?");
+    }
+
+    #[test]
+    fn workspace_labels_follow_each_workspaces_active_tab_and_pane() {
+        let mut ws = Workspace {
+            name: "saved custom name".into(),
+            persist: true,
+            tabs: vec![
+                TabState::new(Node::Leaf(1), 1),
+                TabState::new(
+                    Node::split_even(Axis::Horizontal, vec![Node::Leaf(2), Node::Leaf(3)]),
+                    2,
+                ),
+            ],
+            active_tab: 0,
+        };
+        let mut paths = HashMap::from([
+            (1, PathBuf::from("/a/omnipty")),
+            (2, PathBuf::from("/b/other")),
+            (3, PathBuf::from("/c/split")),
+        ]);
+        let label = |ws: &Workspace, ix, paths: &HashMap<PaneId, PathBuf>| {
+            workspace_label(ix, paths.get(&ws.active_id()).map(PathBuf::as_path), None)
+        };
+        assert_eq!(label(&ws, 0, &paths), "1 - omnipty");
+        ws.active_tab = 1;
+        assert_eq!(label(&ws, 0, &paths), "1 - other");
+        ws.tabs[1].active = 3;
+        assert_eq!(label(&ws, 0, &paths), "1 - split");
+        paths.insert(3, PathBuf::from("/new/中文目录"));
+        assert_eq!(label(&ws, 0, &paths), "1 - 中文目录");
+        assert_eq!(label(&ws, 1, &paths), "2 - 中文目录");
+        assert_eq!(ws.name, "saved custom name");
     }
 }
 

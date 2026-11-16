@@ -31,7 +31,6 @@ omnipty_actions! {
     CheckForUpdates => "app::check_for_updates", "Check for Updates",       "Application", ["upgrade"], Root;
     ShowChangelog   => "app::changelog",         "What's New",              "Application", ["changelog", "release notes"], Root;
     InstallUpdate   => "app::install_update",    "Install Downloaded Update", "Application", [], Root;
-    ToggleStatusBar => "app::toggle_status_bar", "Toggle Status Bar",       "Application", [], Root;
     ToggleTabBar    => "app::toggle_tab_bar",    "Toggle Tab Bar",          "Application", ["hide tabs", "show tabs"], Root;
     ShowAppMenu     => "app::menu",              "Show App Menu",           "Application", ["hamburger", "menu bar"], Root;
 
@@ -123,9 +122,8 @@ omnipty_actions! {
     WsDown          => "workspace::down",           "Workspaces: Move Down",      "Workspace", [], Workspaces;
     WsUp            => "workspace::up",             "Workspaces: Move Up",        "Workspace", [], Workspaces;
     WsOpen          => "workspace::open",           "Workspaces: Switch to Selected", "Workspace", [], Workspaces;
-    WsAdd           => "workspace::add",            "Workspaces: Add Named",      "Workspace", ["create"], Workspaces;
+    WsAdd           => "workspace::add",            "Workspaces: Add",            "Workspace", ["create"], Workspaces;
     WsDelete        => "workspace::delete",         "Workspaces: Delete Selected", "Workspace", ["remove"], Workspaces;
-    WsRename        => "workspace::rename",         "Workspaces: Rename Selected", "Workspace", ["rename workspace"], Workspaces;
     WsTogglePersist => "workspace::toggle_persist", "Workspaces: Pin / Unpin",    "Workspace", ["pin workspace", "unpin workspace", "persist", "save"], Workspaces;
     WsEditStartup   => "workspace::edit_startup_commands", "Workspaces: Edit Startup Commands…", "Workspace", ["run on restore", "autorun"], Workspaces;
     WsEscape        => "workspace::escape",         "Workspaces: Dismiss",        "Workspace", [], Workspaces;

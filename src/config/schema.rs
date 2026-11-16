@@ -13,6 +13,7 @@ pub struct Config {
     pub tree: TreeConfig,
     pub colors: ColorsConfig,
     pub prompt: PromptConfig,
+    /// Legacy settings, parsed only so existing config files still load.
     pub status_bar: StatusBarConfig,
     pub tabs: TabsConfig,
     pub bell: BellMode,
@@ -264,7 +265,7 @@ impl Default for NotificationsConfig {
 }
 
 /// The per-pane command log built from the shell integration's OSC 133
-/// markers: what feeds the status bar, tab indicators, history search, and
+/// markers: what feeds tab indicators, history search, and
 /// the failure gutter.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -437,6 +438,7 @@ impl TryFrom<BTreeMap<String, toml::Value>> for KeymapConfig {
     }
 }
 
+/// Legacy status-bar settings, retained only for config-file compatibility.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct StatusBarConfig {
@@ -1072,6 +1074,20 @@ mod duration_tests {
 #[cfg(test)]
 mod tabs_config_tests {
     use super::*;
+
+    #[test]
+    fn legacy_status_bar_settings_still_parse() {
+        for enabled in [false, true] {
+            for position in ["top", "bottom"] {
+                let c: Config = toml::from_str(&format!(
+                    "[status_bar]\nenabled = {enabled}\nposition = \"{position}\"\ntab = \"name\"\n"
+                ))
+                .unwrap();
+                assert_eq!(c.status_bar.enabled, enabled);
+                assert_eq!(c.status_bar.tab, StatusBarTab::Name);
+            }
+        }
+    }
 
     #[test]
     fn tab_options_parse_and_default_to_visible_numbers() {

@@ -389,6 +389,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn osc_titles_and_title_stack_resets_reach_the_pane() {
+        let size = TermSize {
+            columns: 80,
+            screen_lines: 24,
+            cell_width: 8.0,
+            cell_height: 16.0,
+            scale: 1.0,
+        };
+        let options = SessionOptions {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"printf '\033[22;0t\033]0;OSC zero\007\033]2;中文项目\033\\\033]2;\007\033[23;0t'"#.into(),
+            ],
+            working_directory: None,
+            scrollback: 100,
+            env: HashMap::new(),
+            images: false,
+        };
+        let (_session, mut rx) = TerminalSession::spawn(options, size).expect("spawn sh");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut titles = Vec::new();
+        let mut exited = false;
+        while !exited && Instant::now() < deadline {
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    SessionEvent::Term(AlacEvent::Title(title)) => titles.push(Some(title)),
+                    SessionEvent::Term(AlacEvent::ResetTitle) => titles.push(None),
+                    SessionEvent::Term(AlacEvent::ChildExit(_)) => exited = true,
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(exited, "title test shell did not exit");
+        assert_eq!(
+            titles,
+            vec![
+                Some("OSC zero".into()),
+                Some("中文项目".into()),
+                Some(String::new()),
+                None
+            ]
+        );
+    }
+
     /// The event loop splits parser slices at OSC 133 markers: a real zsh
     /// with the integration installed must deliver `CommandEnd { exit: 1 }`
     /// for `false`, with exact rows, and a non-integrated shell must deliver

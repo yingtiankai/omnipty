@@ -18,6 +18,16 @@ write for users: what changed and why it matters, not which files moved.
   following the caret. Unconfirmed text stays out of the shell and broadcast
   panes; cancelling or changing focus discards the composition.
 
+### Changed
+
+- Automatic tab titles prefer a program's OSC title, then its foreground
+  process name (including shells). Manually renamed tabs still take precedence.
+- Workspace labels now follow the active tab's focused pane directory, for
+  example `1 - omnipty`. Numbers follow the workspace list order. Stored names
+  and layouts are preserved, but workspace naming prompts have been removed.
+- Removed the status bar and its menu/palette toggle, including its background
+  status polling. Old `[status_bar]` config sections still load but are ignored.
+
 ### Fixed
 
 - Shift/Alt/Ctrl+Enter now keep their modifiers instead of becoming a plain

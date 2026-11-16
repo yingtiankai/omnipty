@@ -7,18 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Branch and dirtiness for the status bar.
-#[derive(Default, Clone, PartialEq, Debug)]
-pub struct GitStatus {
-    pub branch: Option<String>,
-    pub dirty: bool,
-    pub ahead: u32,
-    pub behind: u32,
-}
-
 /// Whether invoking `git` is safe. On a Mac without the Command Line Tools,
 /// /usr/bin/git is a shim that pops Apple's "Install Developer Tools?" GUI —
-/// our 3-second status poll must never be the thing that triggers it.
+/// background queries must never be the thing that triggers it.
 pub fn git_usable() -> bool {
     static USABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *USABLE.get_or_init(|| {
@@ -58,34 +49,6 @@ fn git_text(cwd: &Path, args: &[&str]) -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-pub fn read_git_status(cwd: &Path) -> GitStatus {
-    if !git_usable() {
-        return GitStatus::default();
-    }
-    let git = |args: &[&str]| git_text(cwd, args);
-    let Some(branch) = git(&["symbolic-ref", "--short", "HEAD"])
-        .or_else(|| git(&["rev-parse", "--short", "HEAD"]))
-        .filter(|b| !b.is_empty())
-    else {
-        return GitStatus::default();
-    };
-    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    let (ahead, behind) = git(&["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-        .and_then(|s| {
-            let (a, b) = s.split_once('\t')?;
-            Some((a.parse().ok()?, b.parse().ok()?))
-        })
-        .unwrap_or((0, 0));
-    GitStatus {
-        branch: Some(branch),
-        dirty,
-        ahead,
-        behind,
-    }
 }
 
 /// The repository root containing `cwd`, or `None` outside a repo.

@@ -18,7 +18,7 @@ unit tests do not exercise AppKit or the system candidate window.
 - Type `阿里云` and mixed ASCII/Chinese, then move the cursor left and right.
   Text must stay aligned with the cell grid, with no growing gap before the
   cursor and no displaced duplicate character under a block cursor.
-- Enter Chinese in tab/workspace names, file create/rename/move prompts,
+- Enter Chinese in tab names, file create/rename/move prompts,
   startup commands, the command palette, file finder, navigator, command
   history, and file-tree filtering. Confirm searches/filters refresh.
 - In terminal search and copy-mode `/` or `?` search, compose a Chinese word
@@ -36,3 +36,25 @@ unit tests do not exercise AppKit or the system candidate window.
   a shell, vim, and tmux. Ctrl+Tab must still switch the app's tabs. Legacy
   applications may need a binding for CSI-u modified Enter; no complete Kitty
   keyboard-protocol support is advertised by these changes.
+
+## Titles and layout
+
+- With shell title hooks disabled, run `printf '\033]2;中文项目\007'`.
+  The tab and its drag preview should show `中文项目`, even with a foreground
+  program running. OSC 0 and ST-terminated titles should work too. An empty
+  title (`printf '\033]2;\007'`) should fall back to the process name, including
+  `zsh` at a prompt. A manually renamed tab should keep its name until cleared.
+- In the first workspace, `cd ~/Desktop/omnipty`: its label should be
+  `1 - omnipty`. Change directories, switch tabs, and focus a different split;
+  the directory must follow that workspace's active tab's focused pane.
+  Check background workspaces and drag-reordering too; numbering follows the
+  list, not the saved name. Go To, delete confirmation, and startup-command
+  editor headings must use the same labels.
+- New workspace buttons and the panel's `a` key should create a workspace
+  without a name prompt. Workspace rename must be absent from the context
+  menu, palette, and `r` binding. Pinned names/layouts on disk must be preserved.
+- The terminal should extend to the bottom with no reserved status-bar gap;
+  toasts sit 8 px from the bottom. View and the command palette must have no
+  status-bar toggle. Old `[status_bar]` settings, including `enabled = true`
+  and either position, must not restore the bar or cause a config error.
+  Broadcast pane borders, copy-mode labels, and tab activity dots still work.
