@@ -415,6 +415,20 @@ fn regex_escape(s: &str) -> String {
 
 impl EventEmitter<TerminalEvent> for TerminalPane {}
 
+/// The selected text, without the placeholder cells of any image it crosses.
+fn selection_text<T>(term: &alacritty_terminal::term::Term<T>) -> Option<String> {
+    let text = term.selection_to_string()?;
+    Some(strip_placeholders(&text).into_owned())
+}
+
+fn yank_selection<T>(term: &mut alacritty_terminal::term::Term<T>) -> Option<String> {
+    let text = selection_text(term).filter(|text| !text.is_empty())?;
+    if term.mode().contains(TermMode::VI) {
+        term.selection = None;
+    }
+    Some(text)
+}
+
 /// One cell past `p` in `direction`, wrapping at line ends and clamped to
 /// the grid — the origin for "the next match after this one".
 fn step_point<T>(
@@ -1329,23 +1343,13 @@ impl TerminalPane {
         cx.notify();
     }
 
-    /// The selected text, without the placeholder cells of any image the
-    /// selection runs across.
-    fn selection_text(&self) -> Option<String> {
-        let text = self.session.as_ref()?.term.lock().selection_to_string()?;
-        Some(strip_placeholders(&text).into_owned())
-    }
-
-    /// Copy the selection (if any) to the clipboard. Returns whether
-    /// anything was copied.
-    fn copy_selection(&self, cx: &mut Context<Self>) -> bool {
-        let text = self.selection_text();
-        match text {
-            Some(text) if !text.is_empty() => {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                true
-            }
-            _ => false,
+    /// Copy the selection, returning visual mode to vi normal mode.
+    fn copy_selection(&self, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+        let text = yank_selection(&mut session.term.lock());
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.notify();
         }
     }
 
@@ -1479,14 +1483,13 @@ impl TerminalPane {
                 term.vi_goto_point(top);
             }
             (Some('y'), 'y') => {
-                // yy: yank the cursor's line and leave.
+                // yy: yank the cursor's line.
                 let point = term.vi_mode_cursor.point;
                 let mut selection = Selection::new(SelectionType::Lines, point, Side::Left);
                 selection.include_all();
                 term.selection = Some(selection);
                 drop(term);
                 self.copy_selection(cx);
-                self.exit_copy_mode(cx);
                 return;
             }
             (Some(_), _) => {
@@ -1540,9 +1543,7 @@ impl TerminalPane {
             }
             (None, 'y') | (None, '\r') => {
                 drop(term);
-                if self.copy_selection(cx) {
-                    self.exit_copy_mode(cx);
-                }
+                self.copy_selection(cx);
                 return;
             }
             (None, 'v') => {
@@ -2762,7 +2763,10 @@ impl TerminalPane {
         if self.selecting {
             self.selecting = false;
             self.autoscroll = None;
-            if let Some(text) = self.selection_text()
+            if let Some(text) = self
+                .session
+                .as_ref()
+                .and_then(|s| selection_text(&s.term.lock()))
                 && !text.is_empty()
             {
                 // Linux: a selection is the primary selection, always —
@@ -3242,6 +3246,93 @@ mod copy_mode_tests {
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Term, test::TermSize};
     use alacritty_terminal::vte::ansi::Processor;
+
+    #[test]
+    fn yanking_returns_to_vi_normal_without_moving_the_cursor_or_view() {
+        for alternate in [false, true] {
+            for ty in [
+                SelectionType::Simple,
+                SelectionType::Semantic,
+                SelectionType::Lines,
+                SelectionType::Block,
+            ] {
+                let mut term =
+                    Term::new(TermConfig::default(), &TermSize::new(40, 4), VoidListener);
+                let mut parser: Processor = Processor::new();
+                parser.advance(&mut term, "你好 world\r\n".repeat(12).as_bytes());
+                if alternate {
+                    parser.advance(
+                        &mut term,
+                        "\x1b[?1049h\x1b[H你好 world\r\nrow two".as_bytes(),
+                    );
+                } else {
+                    term.scroll_display(Scroll::Top);
+                    assert!(term.grid().display_offset() > 0);
+                }
+                parser.advance(&mut term, b"\x1b[?1002h");
+                term.toggle_vi_mode();
+                let offset = term.grid().display_offset();
+                term.vi_goto_point(GridPoint::new(Line(-(offset as i32)), Column(0)));
+                let mut selection = Selection::new(ty, term.vi_mode_cursor.point, Side::Left);
+                selection.include_all();
+                term.selection = Some(selection);
+                term.vi_motion(ViMotion::Right);
+                let expected = selection_text(&term).unwrap();
+                assert!(expected.contains("你好"), "{ty:?}: {expected:?}");
+                let mode = *term.mode();
+                let cursor = term.vi_mode_cursor.point;
+                let live_cursor = term.grid().cursor.point;
+
+                assert_eq!(yank_selection(&mut term), Some(expected));
+                assert!(term.selection.is_none());
+                assert_eq!(*term.mode(), mode);
+                assert_eq!(term.vi_mode_cursor.point, cursor);
+                assert_eq!(term.grid().cursor.point, live_cursor);
+                assert_eq!(term.grid().display_offset(), offset);
+                assert!(!mouse_reporting(*term.mode(), false));
+                assert_eq!(wheel_target(*term.mode(), false), WheelTarget::Scrollback);
+
+                term.vi_motion(ViMotion::Right);
+                term.vi_motion(ViMotion::Right);
+                assert_ne!(term.vi_mode_cursor.point, cursor);
+                let mut selection =
+                    Selection::new(SelectionType::Simple, term.vi_mode_cursor.point, Side::Left);
+                selection.include_all();
+                term.selection = Some(selection);
+                assert_eq!(yank_selection(&mut term).as_deref(), Some("w"));
+                assert!(term.selection.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_copy_keeps_its_selection_and_strips_image_placeholders() {
+        let mut term = alacritty_terminal::term::test::mock_term(&format!("A{PLACEHOLDER}你"));
+        let mut selection = Selection::new(
+            SelectionType::Lines,
+            GridPoint::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        selection.include_all();
+        term.selection = Some(selection);
+        assert_eq!(yank_selection(&mut term).unwrap().trim_end(), "A你");
+        assert!(term.selection.is_some());
+        assert!(!term.mode().contains(TermMode::VI));
+    }
+
+    #[test]
+    fn empty_yanks_do_not_discard_a_visual_selection() {
+        let mut term = alacritty_terminal::term::test::mock_term(&PLACEHOLDER.to_string());
+        term.toggle_vi_mode();
+        assert_eq!(yank_selection(&mut term), None);
+        let point = GridPoint::new(Line(0), Column(0));
+        term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+        assert_eq!(yank_selection(&mut term), None);
+        term.selection.as_mut().unwrap().include_all();
+        assert_eq!(yank_selection(&mut term), None);
+        assert!(term.selection.is_some());
+        assert!(term.mode().contains(TermMode::VI));
+    }
 
     #[test]
     fn alternate_screen_supports_vi_selection_search_and_preserves_the_live_cursor() {

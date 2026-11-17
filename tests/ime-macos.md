@@ -77,8 +77,9 @@ unit tests do not exercise AppKit or the system candidate window.
   broadcast red borders, failure flashes, and configured SSH-host borders remain.
 - In a full-screen TUI (vim, less, or Codex's alternate-screen mode), press
   `cmd-shift-v` or `ctrl-w [` to enter OmniPTY copy mode. Check `hjkl`, `v`/`V`,
-  `y`/`yy`, and `/`/`?` searches including Chinese. A yank or `q` should return
-  input to the TUI; Escape first clears a selection, then leaves copy mode.
+  `y`/`yy`, and `/`/`?` searches including Chinese. A yank should clear the
+  selection and return to vi normal mode (`COPY`), not pass input to the TUI.
+  `q` exits copy mode; Escape first clears a selection, then leaves copy mode.
 - With mouse reporting enabled in the TUI, clicks and drags should select text
   locally in copy mode, and wheel/trackpad scrolling must not send mouse reports
   or arrow keys to the TUI. Keyboard input and paste must not reach it either.
@@ -86,6 +87,14 @@ unit tests do not exercise AppKit or the system candidate window.
 - Repeat with the macOS window in native full screen and with a zoomed pane.
   The alternate screen has only its current grid, not the shell's scrollback;
   application redraws can still change that grid while copy mode is active.
+- Select Chinese text with `v`, `V`, and Ctrl+V, then copy using `y`, Enter,
+  and Cmd+C in separate runs. The clipboard should receive the text once, the
+  selection should disappear, and `hjkl` should still move the vi cursor at
+  the same scroll position. Repeat `yy` and consecutive selections/yanks in
+  both primary scrollback and a full-screen TUI. Plain mouse copying and
+  copying a search-field selection should retain their previous behavior.
+- After copying, verify that `q`, `i`, `a`, Ctrl+C, Ctrl+[, Escape with no
+  selection, and the copy-mode toggle still return input to the application.
 
 ## Main-process exits
 

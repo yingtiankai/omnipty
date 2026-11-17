@@ -20,6 +20,9 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Changed
 
+- Copying in vi visual mode now clears the selection and returns to vi normal
+  mode instead of exiting copy mode. `y`, `yy`, Enter, and the Copy action keep
+  the vi cursor and scroll position; explicit copy-mode exit keys are unchanged.
 - Tabs now show only their titles and close buttons, without position numbers
   or running/failed/unread dots. Tab-switching shortcuts are unchanged. Legacy
   `tabs.show_numbers` settings still load but are ignored; workspace numbering,
