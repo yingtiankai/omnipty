@@ -35,10 +35,6 @@ impl Command {
             .duration_since(self.started)
     }
 
-    pub fn failed(&self) -> bool {
-        self.exit.is_some_and(|e| e != 0)
-    }
-
     /// First line of the command, trimmed, for one-line UI.
     pub fn label(&self) -> &str {
         self.text
@@ -86,10 +82,6 @@ impl CommandLog {
 
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Command> {
         self.entries.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     pub fn get(&self, id: u64) -> Option<&Command> {
@@ -264,7 +256,6 @@ mod tests {
         assert_eq!(cmd.text.as_deref(), Some("cargo build"));
         assert_eq!(cmd.cwd, Some(PathBuf::from("/repo")));
         assert_eq!(cmd.exit, Some(1));
-        assert!(cmd.failed());
         assert_eq!(cmd.prompt_row, Some(5));
         assert_eq!(cmd.output_rows, Some(6..40));
         assert!(!log.is_running());
@@ -312,7 +303,7 @@ mod tests {
         let mut alt = m(MarkerKind::CommandStart { cmdline: None }, 3);
         alt.alt_screen = true;
         assert_eq!(log.on_marker(&alt, t), None);
-        assert!(log.is_empty());
+        assert_eq!(log.entries().count(), 0);
     }
 
     #[test]

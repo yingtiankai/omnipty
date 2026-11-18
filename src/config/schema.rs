@@ -265,7 +265,7 @@ impl Default for NotificationsConfig {
 }
 
 /// The per-pane command log built from the shell integration's OSC 133
-/// markers: what feeds notifications, history search, and the failure gutter.
+/// markers: what feeds notifications and history search.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CommandsConfig {

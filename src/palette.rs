@@ -325,10 +325,13 @@ mod tests {
     }
 
     #[test]
-    fn removed_workspace_rename_and_status_bar_actions_are_not_offered() {
+    fn removed_actions_are_not_offered() {
         assert!(top("rename workspace").is_empty());
         assert!(registry::by_id("workspace::rename").is_none());
         assert!(registry::by_id("app::toggle_status_bar").is_none());
+        assert!(registry::by_id("app::check_for_updates").is_none());
+        assert!(registry::by_id("app::install_update").is_none());
+        assert!(registry::by_id("app::changelog").is_some());
     }
 
     #[test]

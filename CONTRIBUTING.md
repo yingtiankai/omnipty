@@ -50,7 +50,7 @@ cargo test         # run the test suite
 The first build compiles GPUI, which takes a few minutes. A `cargo run` binary is a debug
 build, fine for iterating on a change, but full-screen programs like nvim will feel
 sluggish in it, since an unoptimized GPUI redraw doesn't fit in a 60 Hz frame. It also
-never checks for updates and isn't a real app bundle on macOS. The
+isn't a real app bundle on macOS. This fork never checks for updates, in any build. The
 [install docs](https://omnipty.com/docs/install/#source) cover the release-build scripts
 if you need one.
 
@@ -68,7 +68,7 @@ The tree follows `cd` by polling the PTY's foreground process group cwd
 (`tcgetpgrp` + `proc_pidinfo` on macOS, `/proc/<pid>/cwd` on Linux), so it works
 with zero shell cooperation. Platform differences are confined to a handful of
 `cfg` sites: the process lookups, notifications (`UNUserNotificationCenter` /
-`notify-send`), the updater, the keymap tables, and the window chrome.
+`notify-send`), the keymap tables, and the window chrome.
 
 ## Making a change
 

@@ -1,5 +1,11 @@
 # Releasing OmniPTY
 
+**Fork note:** this document describes upstream publishing and older upstream
+clients. This fork has no update checker, downloader, installer, or update
+notifications on macOS or Linux. Its builds must be installed manually; publishing
+to the upstream manifest does not update this fork. The distribution scripts and
+their signature checks remain unchanged.
+
 The loop: **note changes in `CHANGELOG.md` → `bump.sh` → commit → `release.sh`**.
 
 ## Steps
@@ -260,7 +266,7 @@ release and is never written by `release.sh`; it carries those copies to
 0.9.4, after which they update from here like everyone else. How it was set
 up is in `support/RENAME_RUNBOOK.md`. Leave it serving.
 
-## What happens after publishing
+## What happens after publishing (upstream clients only)
 
 Installed macOS copies read
 `https://downloads.omnipty.com/releases/stable.json` on launch and every

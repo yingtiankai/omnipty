@@ -83,7 +83,7 @@ fn route_clicked(key: RouteKey) {
 /// bundle, where the center can't be used at all.
 pub fn init() {
     #[cfg(target_os = "macos")]
-    if crate::update::installed_bundle().is_some() {
+    if crate::paths::installed_bundle().is_some() {
         macos::init();
     }
 }
@@ -91,7 +91,7 @@ pub fn init() {
 /// Post a notification. `route` is attached so a click can find its pane.
 pub fn post(title: &str, body: &str, route: Option<RouteKey>) {
     #[cfg(target_os = "macos")]
-    if crate::update::installed_bundle().is_some() {
+    if crate::paths::installed_bundle().is_some() {
         macos::post(title, body, route);
     } else {
         post_via_osascript(title, body);

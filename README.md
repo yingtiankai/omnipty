@@ -37,13 +37,12 @@ OmniPTY builds those in, all configured from one TOML file that reloads when you
 
 It's GPU-rendered on [GPUI](https://www.gpui.rs) (Zed's UI framework), with
 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) doing the emulation,
-so vim, htop, and tmux itself still just work. No account, no AI, no usage tracking:
-OmniPTY asks the network whether there's a newer release, and nothing else unless you say
-yes to [crash reports](https://omnipty.com/docs/configuration/#crash_reports) (stack trace,
-version, OS, a start/stop ping per launch; never anything from a terminal) when it asks on
-first launch.
+so vim, htop, and tmux itself still just work. No account, no AI, no usage tracking.
+This fork does not check for, download, or install updates. Optional
+[crash reports](https://omnipty.com/docs/configuration/#crash_reports) remain opt-in
+(stack trace, version, OS, a start/stop ping per launch; never anything from a terminal).
 
-OmniPTY was called Oxide until 0.9.0. Installed copies carry themselves across on update;
+OmniPTY was called Oxide until 0.9.0. Existing config and pinned workspaces migrate on first launch;
 see [upgrading from Oxide](https://omnipty.com/docs/install/#from-oxide) for Homebrew and dotfiles.
 
 ## What sets it apart
@@ -74,7 +73,8 @@ brew install --cask omnipty-terminal/tap/omnipty
 ```
 
 Or grab the [signed, notarized DMG](https://downloads.omnipty.com/omnipty/latest/OmniPTY.dmg).
-OmniPTY keeps itself up to date from there.
+These downloads are upstream builds, not this fork. Update this fork manually by
+quitting the app and replacing it with a new fork build; there is no in-app updater.
 
 **Linux** x86_64, Wayland or X11: the
 [release tarball](https://downloads.omnipty.com/omnipty/latest/omnipty-linux-x86_64.tar.gz)

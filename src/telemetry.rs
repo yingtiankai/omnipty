@@ -165,11 +165,6 @@ pub fn tag(key: &str, value: impl ToString) {
     Hub::main().configure_scope(|scope| scope.set_tag(key, value));
 }
 
-/// The first launch after an update, for counting how updates land.
-pub fn updated(from: &str, to: &str) {
-    sentry::logger_info!(from = from, to = to, "updated");
-}
-
 /// The previous run's crash report ID, the first time it's asked for: one
 /// toast, not one per window.
 pub fn crash_notice() -> Option<&'static str> {

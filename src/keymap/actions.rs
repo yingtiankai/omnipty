@@ -28,9 +28,7 @@ omnipty_actions! {
     HideOthers      => "app::hide_others",       "Hide Others",             "Application", [], Root;
     OpenHelp        => "app::help",              "Open Help",               "Application", ["docs"], Root;
     ReportIssue     => "app::report_issue",      "Report an Issue",         "Application", ["bug", "github"], Root;
-    CheckForUpdates => "app::check_for_updates", "Check for Updates",       "Application", ["upgrade"], Root;
     ShowChangelog   => "app::changelog",         "What's New",              "Application", ["changelog", "release notes"], Root;
-    InstallUpdate   => "app::install_update",    "Install Downloaded Update", "Application", [], Root;
     ToggleTabBar    => "app::toggle_tab_bar",    "Toggle Tab Bar",          "Application", ["hide tabs", "show tabs"], Root;
     ShowAppMenu     => "app::menu",              "Show App Menu",           "Application", ["hamburger", "menu bar"], Root;
 

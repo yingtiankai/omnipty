@@ -16,7 +16,6 @@ mod startup;
 mod telemetry;
 mod terminal;
 mod tree;
-mod update;
 mod workspaces;
 
 use gpui::{App, Application, Menu, MenuItem, SystemMenuType};
@@ -31,7 +30,6 @@ pub(crate) const WEBSITE_URL: &str = "https://omnipty.com";
 pub(crate) fn menus() -> Vec<Menu> {
     let mut omnipty = vec![
         MenuItem::action("About OmniPTY", About),
-        MenuItem::action("Check for Updates…", CheckForUpdates),
         MenuItem::separator(),
         MenuItem::action("Settings…", OpenSettings),
         MenuItem::action("Select Theme…", SelectTheme),
@@ -168,7 +166,7 @@ fn main() {
     // A bundle the old updater wrote OmniPTY into under its former name
     // moves to OmniPTY.app and relaunches from there.
     #[cfg(target_os = "macos")]
-    if update::relocate_renamed_bundle() {
+    if paths::relocate_renamed_bundle() {
         return;
     }
 
@@ -176,11 +174,6 @@ fn main() {
     // After the config, so `[crash_reports] enabled = false` is honoured, and
     // after the early returns above, so `--version` never starts it.
     let _sentry = telemetry::init(&config);
-    #[cfg(target_os = "macos")]
-    {
-        update::check_install_attempt();
-        update::prune_updates();
-    }
     // Silent-cd/run handoff files a killed shell never consumed.
     prompt::integration::clean_stale_channels();
 
@@ -326,6 +319,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn menus_keep_changelog_without_update_actions() {
+        let names: Vec<_> = menus()
+            .into_iter()
+            .flat_map(|m| m.items)
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_lowercase().contains("update"))
+        );
+        assert!(names.iter().any(|name| name == "What's New"));
     }
 
     /// The ☰ popover can't show OS-managed submenus or hide the app, so

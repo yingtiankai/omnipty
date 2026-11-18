@@ -20,6 +20,14 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Changed
 
+- Removed the file-tree/workspaces drawer's blue focus edge. The neutral divider,
+  resizing, selection, and keyboard focus still work as before.
+- Removed the command-status dots along the terminal's right edge, including
+  their click-to-jump gutter. Command history, failure flashes, and desktop
+  notifications remain available.
+- Removed update checks, background downloads, in-app installation, and all
+  update menus, palette actions, and notices. Future updates must be installed
+  manually. Existing downloads are left on disk; Help → What's New remains.
 - Copying in vi visual mode now clears the selection and returns to vi normal
   mode instead of exiting copy mode. `y`, `yy`, Enter, and the Copy action keep
   the vi cursor and scroll position; explicit copy-mode exit keys are unchanged.

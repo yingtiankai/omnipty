@@ -69,6 +69,22 @@ unit tests do not exercise AppKit or the system candidate window.
   double-click rename, close buttons, and the add button. Workspace numbers,
   command history, failure flashes, and desktop notifications should be unchanged.
 
+## Drawer, command markers, and updates
+
+- Click the file tree and workspaces panel, then focus the terminal. No blue
+  line should appear at the drawer's right edge. The neutral divider must stay
+  in place; dragging it, selecting rows, and keyboard navigation must still work.
+- Run successful, failed, and long-running commands, then scroll through their
+  output. No command dots should appear at the terminal's right edge. Cmd+R
+  history, prompt navigation, failure flashes, and desktop notifications should
+  still work according to their existing settings.
+- In an installed release build, confirm there is no update pill or update menu
+  or palette action, including after launch with old update downloads present.
+  There must be no startup/periodic release check, download, install, or
+  version-change toast. Existing update-cache files must remain untouched.
+  Help → What's New must still open the bundled changelog, and ordinary config,
+  keymap, and crash-report notices must still work.
+
 ## Pane focus and full-screen copy mode
 
 - Focus a single pane with the drawer open, switch between split panes, and

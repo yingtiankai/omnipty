@@ -957,18 +957,6 @@ impl TerminalPane {
         (!text.is_empty()).then_some(text)
     }
 
-    /// Scroll so absolute `row` sits at the top of the viewport.
-    pub fn scroll_to_row(&mut self, row: usize, cx: &mut Context<Self>) {
-        let Some(session) = &self.session else { return };
-        let mut term = session.term.lock();
-        let history = term.grid().history_size();
-        let current = term.grid().display_offset() as i32;
-        let target = history.saturating_sub(row).min(history) as i32;
-        term.scroll_display(Scroll::Delta(target - current));
-        drop(term);
-        cx.notify();
-    }
-
     fn copy_last_output(
         &mut self,
         _: &CopyLastOutput,
@@ -2920,68 +2908,6 @@ fn wheel_target(mode: TermMode, shift: bool) -> WheelTarget {
     }
 }
 
-impl TerminalPane {
-    /// The failure gutter: a tick per command down the right edge, placed by
-    /// its share of the whole buffer. Dim for success, red for failure,
-    /// accent while running. Click to scroll there.
-    fn render_gutter(&self, cx: &Context<Self>) -> Option<gpui::Div> {
-        if self.log.is_empty() || self.child_exited.is_some() {
-            return None;
-        }
-        let session = self.session.as_ref()?;
-        let (total, alt) = {
-            let term = session.term.lock();
-            (
-                term.grid().history_size() + term.screen_lines(),
-                term.mode().contains(TermMode::ALT_SCREEN),
-            )
-        };
-        if alt || total == 0 {
-            return None;
-        }
-        let theme = &self.theme;
-        let dim = colors::blend(theme.foreground, theme.background, 0.6);
-        let mut strip = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_0()
-            .w(gpui::px(6.0));
-        for cmd in self.log.entries() {
-            let Some(row) = cmd.prompt_row else { continue };
-            let color = if cmd.finished.is_none() {
-                theme.ansi[4]
-            } else if cmd.failed() {
-                theme.ansi[1]
-            } else {
-                dim
-            };
-            let frac = (row as f32 / total as f32).clamp(0.0, 1.0);
-            let id = cmd.id;
-            strip = strip.child(
-                div()
-                    .id(("gutter-mark", id as usize))
-                    .absolute()
-                    .right_0()
-                    .top(gpui::relative(frac))
-                    .w(gpui::px(4.0))
-                    .h(gpui::px(3.0))
-                    .rounded_sm()
-                    .bg(color)
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
-                            cx.stop_propagation();
-                            this.scroll_to_row(row, cx);
-                        }),
-                    ),
-            );
-        }
-        Some(strip)
-    }
-}
-
 impl Render for TerminalPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
@@ -3052,7 +2978,6 @@ impl Render for TerminalPane {
                 }),
             )
             .child(TerminalElement::new(cx.entity(), focused))
-            .when_some(self.render_gutter(cx), |this, gutter| this.child(gutter))
             // Where a cmd-click would go, browser-style: the one place an
             // OSC 8 link's real address is visible.
             .when_some(self.hover_url.clone(), |this, url| {

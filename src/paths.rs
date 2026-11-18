@@ -1,4 +1,4 @@
-//! Where user state lives, and the one-time move from the old name.
+//! App bundle and user-state paths, including the one-time old-name migration.
 //!
 //! The app was called Oxide until 0.9.0 and kept its files under
 //! `~/.config/oxide` and `~/.cache/oxide`. The first launch of a renamed
@@ -7,13 +7,15 @@
 //! this migration once no installed copy predates the rename.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 const NEW: &str = "omnipty";
 const OLD: &str = "oxide";
 
 /// The files worth carrying over. Everything else in the cache is generated
 /// on launch or is a per-session handoff file.
-const CACHE_FILES: &[&str] = &["workspaces.json", "last_version.txt", "window.txt"];
+const CACHE_FILES: &[&str] = &["workspaces.json", "window.txt"];
 
 fn home() -> PathBuf {
     directories::BaseDirs::new()
@@ -33,6 +35,45 @@ pub fn config_path() -> PathBuf {
 /// `~/.cache/omnipty`, created and seeded from `~/.cache/oxide` on first use.
 pub fn cache_dir() -> PathBuf {
     cache_dir_in(&home())
+}
+
+/// The .app bundle this process is running from, if any.
+#[cfg(target_os = "macos")]
+pub fn installed_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.parent()?.parent()?.parent()?;
+    (bundle.extension().and_then(|e| e.to_str()) == Some("app")).then(|| bundle.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn sh_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// Finish the rename for a copy updated in place by Oxide 0.8.x: its
+/// updater copied this build's contents into `/Applications/Oxide.app`,
+/// where the folder name no longer matches the app inside. Move it to
+/// `OmniPTY.app` and relaunch from there; true means the caller should
+/// exit. If an `OmniPTY.app` is already next to it, leave both alone.
+#[cfg(target_os = "macos")]
+pub fn relocate_renamed_bundle() -> bool {
+    let Some(bundle) = installed_bundle() else {
+        return false;
+    };
+    if bundle.file_name().and_then(|n| n.to_str()) != Some("Oxide.app") {
+        return false;
+    }
+    let target = bundle.with_file_name("OmniPTY.app");
+    if target.exists() || std::fs::rename(&bundle, &target).is_err() {
+        return false;
+    }
+    // `open` on a bundle whose id is already running just activates us, so
+    // the relaunch has to come after we've exited.
+    Command::new("/bin/bash")
+        .arg("-c")
+        .arg(format!("sleep 1; open {}", sh_quote(&target)))
+        .spawn()
+        .is_ok()
 }
 
 fn config_path_in(home: &Path) -> PathBuf {

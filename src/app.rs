@@ -257,7 +257,6 @@ pub struct OmniPTY {
     /// Files opened through the finder or cmd-click, newest first.
     recent_files: VecDeque<PathBuf>,
     tab_bar_override: Option<bool>,
-    update: UpdateState,
     /// Recently closed tabs, newest first, for cmd-shift-t.
     closed_tabs: VecDeque<SavedTab>,
     /// The macOS appearance is dark. Drives `colors.follow_system`.
@@ -497,40 +496,16 @@ enum ToastKind {
 }
 
 /// A corner notice. Transient ones time out; `sticky` ones (config and
-/// keymap errors) stay until the next clean reload. Any toast goes on click;
-/// the post-update one also opens the changelog tab.
+/// keymap errors) stay until the next clean reload. Any toast goes on click.
 #[derive(Clone)]
 struct Toast {
     id: usize,
     kind: ToastKind,
     message: String,
-    opens_changelog: bool,
     sticky: bool,
     /// The one-time crash-reports question: two buttons, and clicking the
     /// body does nothing. × leaves it unanswered, so it's asked again.
     asks_crash_reports: bool,
-}
-
-#[derive(Clone, PartialEq)]
-// Each platform reaches only its own states: Available on Linux, the
-// download/install pair on macOS.
-#[allow(dead_code)]
-enum UpdateState {
-    Idle,
-    Checking,
-    /// Linux: a newer release exists; `url` is its page. No in-place
-    /// install — packages come from the AUR or a tarball.
-    Available {
-        version: String,
-        url: String,
-    },
-    /// macOS: downloading the DMG.
-    Downloading(String),
-    /// macOS: DMG on disk, one click from a swap-and-relaunch.
-    Ready {
-        version: String,
-        dmg: PathBuf,
-    },
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -861,7 +836,6 @@ impl OmniPTY {
             finder_indexing: false,
             recent_files: VecDeque::new(),
             tab_bar_override: None,
-            update: UpdateState::Idle,
             closed_tabs: VecDeque::new(),
             dark_appearance,
             window_active: window.is_window_active(),
@@ -894,19 +868,6 @@ impl OmniPTY {
                 cx,
             );
         }
-        if let Some(previous) = crate::update::note_launch_version() {
-            let current = env!("CARGO_PKG_VERSION");
-            crate::telemetry::updated(&previous, current);
-            // Long enough to read after the window settles, then gone:
-            // What's New stays in the Help menu.
-            let id = this.push_toast(
-                ToastKind::Info,
-                format!("updated v{previous} → v{current} — click for what's new"),
-                true,
-                false,
-            );
-            this.expire_toast(id, 20, cx);
-        }
         this.ask_about_crash_reports();
         if let Some(report) = crate::telemetry::crash_notice() {
             let id = this.push_toast(
@@ -917,172 +878,11 @@ impl OmniPTY {
                     report.get(..8).unwrap_or(report)
                 ),
                 false,
-                false,
             );
             this.expire_toast(id, 30, cx);
         }
 
-        // Auto-check for updates: installed copies only (not cargo run),
-        // shortly after launch and then every 6 hours.
-        if crate::update::is_installed() && !cfg!(debug_assertions) {
-            cx.spawn(async move |this, cx| {
-                loop {
-                    let timer = match this.update(cx, |_, cx| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(15))
-                    }) {
-                        Ok(timer) => timer,
-                        Err(_) => break,
-                    };
-                    timer.await;
-                    if this
-                        .update(cx, |this, cx| this.check_for_updates(false, cx))
-                        .is_err()
-                    {
-                        break;
-                    }
-                    let timer = match this.update(cx, |_, cx| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(6 * 3600))
-                    }) {
-                        Ok(timer) => timer,
-                        Err(_) => break,
-                    };
-                    timer.await;
-                }
-            })
-            .detach();
-        }
         this
-    }
-
-    fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
-        if matches!(
-            self.update,
-            UpdateState::Checking | UpdateState::Downloading(_)
-        ) {
-            return;
-        }
-        if let UpdateState::Ready { .. } = self.update {
-            if manual {
-                self.toast(
-                    ToastKind::Info,
-                    "update already downloaded — click the button to install".into(),
-                    cx,
-                );
-            }
-            return;
-        }
-        self.update = UpdateState::Checking;
-        let bg = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
-            let latest = bg.spawn(async move { crate::update::fetch_latest() }).await;
-            let info = match latest {
-                Ok(Some(info))
-                    if crate::update::is_newer(&info.version, env!("CARGO_PKG_VERSION")) =>
-                {
-                    info
-                }
-                Ok(_) => {
-                    this.update(cx, |this, cx| {
-                        this.update = UpdateState::Idle;
-                        if manual {
-                            this.toast(
-                                ToastKind::Info,
-                                format!("OmniPTY is up to date (v{})", env!("CARGO_PKG_VERSION")),
-                                cx,
-                            );
-                        }
-                    })
-                    .ok();
-                    return;
-                }
-                Err(e) => {
-                    this.update(cx, |this, cx| {
-                        this.update = UpdateState::Idle;
-                        if manual {
-                            this.toast(ToastKind::Error, e, cx);
-                        }
-                    })
-                    .ok();
-                    return;
-                }
-            };
-            let version = info.version.clone();
-            // Linux: announce and point at the release; the package manager
-            // (or the tarball) does the install.
-            #[cfg(not(target_os = "macos"))]
-            {
-                this.update(cx, |this, cx| {
-                    this.update = UpdateState::Available {
-                        version,
-                        url: info.url,
-                    };
-                    cx.notify();
-                })
-                .ok();
-            }
-            #[cfg(target_os = "macos")]
-            {
-                if this
-                    .update(cx, |this, cx| {
-                        this.update = UpdateState::Downloading(version.clone());
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                let bg2 = cx.background_executor().clone();
-                let downloaded = bg2
-                    .spawn(async move { crate::update::download(&info) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    match downloaded {
-                        Ok(dmg) => {
-                            this.update = UpdateState::Ready {
-                                version: version.clone(),
-                                dmg,
-                            };
-                        }
-                        Err(e) => {
-                            // The check just succeeded, so this isn't "offline":
-                            // worth saying even on the automatic path.
-                            this.update = UpdateState::Idle;
-                            this.toast(ToastKind::Error, e, cx);
-                        }
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn install_update(&mut self, cx: &mut Context<Self>) {
-        if let UpdateState::Available { url, .. } = &self.update {
-            cx.open_url(url);
-        }
-        #[cfg(target_os = "macos")]
-        if let UpdateState::Ready { dmg, version } = &self.update {
-            match crate::update::install_and_restart(dmg) {
-                Ok(()) => {
-                    if crate::update::installed_bundle().is_some() {
-                        crate::update::note_install_attempt(version);
-                        cx.quit();
-                    } else {
-                        self.toast(
-                            ToastKind::Info,
-                            "not running from an installed app — opened the DMG instead".into(),
-                            cx,
-                        );
-                    }
-                }
-                Err(e) => self.toast(ToastKind::Error, e, cx),
-            }
-        }
     }
 
     fn for_each_pane(
@@ -1915,20 +1715,13 @@ impl OmniPTY {
         banner
     }
 
-    fn push_toast(
-        &mut self,
-        kind: ToastKind,
-        message: String,
-        opens_changelog: bool,
-        sticky: bool,
-    ) -> usize {
+    fn push_toast(&mut self, kind: ToastKind, message: String, sticky: bool) -> usize {
         let id = self.next_toast_id;
         self.next_toast_id += 1;
         self.toasts.push(Toast {
             id,
             kind,
             message,
-            opens_changelog,
             sticky,
             asks_crash_reports: false,
         });
@@ -1953,7 +1746,6 @@ impl OmniPTY {
              also sends a start and stop ping each launch, so crash rates mean \
              something. Change your answer any time under [crash_reports] in the config."
                 .into(),
-            false,
             true,
         );
         if let Some(toast) = self.toasts.iter_mut().find(|t| t.id == id) {
@@ -1976,7 +1768,7 @@ impl OmniPTY {
 
     /// A notice that times out on its own: 4s for info, 8s for errors.
     fn toast(&mut self, kind: ToastKind, message: String, cx: &mut Context<Self>) {
-        let id = self.push_toast(kind, message, false, false);
+        let id = self.push_toast(kind, message, false);
         let secs = if kind == ToastKind::Error { 8 } else { 4 };
         self.expire_toast(id, secs, cx);
     }
@@ -1995,7 +1787,7 @@ impl OmniPTY {
     /// clean reload replaces or clears it.
     fn sticky_toast(&mut self, message: String) {
         self.toasts.retain(|t| !t.sticky);
-        self.push_toast(ToastKind::Error, message, false, true);
+        self.push_toast(ToastKind::Error, message, true);
     }
 
     fn dismiss_toast(&mut self, id: usize, cx: &mut Context<Self>) {
@@ -2006,7 +1798,7 @@ impl OmniPTY {
         }
     }
 
-    fn click_toast(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn click_toast(&mut self, id: usize, cx: &mut Context<Self>) {
         if self
             .toasts
             .iter()
@@ -2014,11 +1806,7 @@ impl OmniPTY {
         {
             return;
         }
-        let opens_changelog = self.toasts.iter().any(|t| t.id == id && t.opens_changelog);
         self.dismiss_toast(id, cx);
-        if opens_changelog {
-            self.open_changelog_tab(window, cx);
-        }
     }
 
     /// The bundled changelog, rendered to ANSI and paged in a new tab.
@@ -2274,8 +2062,8 @@ impl OmniPTY {
                     .gap_2()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                            this.click_toast(id, window, cx)
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, _window, cx| {
+                            this.click_toast(id, cx)
                         }),
                     )
                     .child(
@@ -6438,8 +6226,6 @@ impl Render for OmniPTY {
             });
         }
 
-        let tree_focused = self.tree_focus(cx).is_focused(window);
-        let accent = theme.ansi[4];
         let drawer_width = self.drawer_width(window);
         let tree_split = self.tree_split();
         // Wherever the selection moved — keys, a click, Go To, a close —
@@ -6489,7 +6275,7 @@ impl Render for OmniPTY {
                 // The padding band doubles as the titlebar: double-click
                 // zooms (respecting the System Settings double-click action),
                 // matching what a real titlebar would do. Rendered first so
-                // overlays like the update pill still get their clicks.
+                // overlays still get their clicks.
                 d.pt(px(30.0)).child(
                     div()
                         .id("titlebar-strip")
@@ -6719,14 +6505,8 @@ impl Render for OmniPTY {
             }))
             .on_action(cx.listener(|this, _: &MoveTabLeft, _w, cx| this.move_active_tab(-1, cx)))
             .on_action(cx.listener(|this, _: &MoveTabRight, _w, cx| this.move_active_tab(1, cx)))
-            .on_action(cx.listener(|this, _: &CheckForUpdates, _w, cx| {
-                this.check_for_updates(true, cx);
-            }))
             .on_action(cx.listener(|this, _: &ShowChangelog, window, cx| {
                 this.open_changelog_tab(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &InstallUpdate, _w, cx| {
-                this.install_update(cx);
             }))
             .on_action(cx.listener(|this, _: &ShowAppMenu, _w, cx| {
                 this.toggle_app_menu(cx);
@@ -6752,14 +6532,8 @@ impl Render for OmniPTY {
                                 px(0.0)
                             })
                             .when(self.drawer_visible, |d| {
-                                let drawer_focused =
-                                    tree_focused || self.ws_focus.is_focused(window);
                                 d.border_r_1()
-                                    .border_color(if drawer_focused {
-                                        accent
-                                    } else {
-                                        blend(theme.foreground, theme.background, 0.85)
-                                    })
+                                    .border_color(blend(theme.foreground, theme.background, 0.85))
                                     .flex()
                                     .flex_col()
                                     .relative()
@@ -6878,64 +6652,6 @@ impl Render for OmniPTY {
             // on top of whichever one is there.
             .when(cfg!(target_os = "linux"), |d| {
                 d.child(self.render_app_menu_button(cx))
-            })
-            .map(|d| match &self.update {
-                UpdateState::Available { version, .. } => d.child(
-                    div()
-                        .id("update-available")
-                        .absolute()
-                        .top(px(5.0))
-                        .right(px(8.0))
-                        .px_3()
-                        .py_0p5()
-                        .rounded_full()
-                        .bg(accent)
-                        .text_size(px(11.0))
-                        .text_color(theme.background)
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.install_update(cx);
-                            }),
-                        )
-                        .child(format!("↑ v{version} available — click for the release")),
-                ),
-                UpdateState::Downloading(version) => d.child(
-                    div()
-                        .absolute()
-                        .top(px(5.0))
-                        .right(px(8.0))
-                        .px_3()
-                        .py_0p5()
-                        .rounded_full()
-                        .bg(blend(theme.background, theme.foreground, 0.08))
-                        .text_size(px(11.0))
-                        .text_color(blend(theme.foreground, theme.background, 0.4))
-                        .child(format!("downloading v{version}…")),
-                ),
-                UpdateState::Ready { version, .. } => d.child(
-                    div()
-                        .id("install-update")
-                        .absolute()
-                        .top(px(5.0))
-                        .right(px(8.0))
-                        .px_3()
-                        .py_0p5()
-                        .rounded_full()
-                        .bg(accent)
-                        .text_size(px(11.0))
-                        .text_color(theme.background)
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _: &gpui::MouseDownEvent, _w, cx| {
-                                this.install_update(cx);
-                            }),
-                        )
-                        .child(format!("↓ v{version} ready — click to install")),
-                ),
-                _ => d,
             })
             .when(self.ws_context_menu.is_some(), |d| {
                 d.child(self.render_ws_context_menu(window, cx))

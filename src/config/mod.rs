@@ -249,7 +249,7 @@ on_failure_always   = false   # a non-zero exit notifies regardless of duration
 passthrough_osc9    = true    # let programs post notifications (OSC 9 / OSC 777)
 
 [commands]
-track        = true           # the command log: cmd-r history, notifications, gutter
+track        = true           # the command log: cmd-r history, notifications
 emit_cmdline = true           # the shell sends each command line to OmniPTY (memory only)
 max_entries  = 500
 
