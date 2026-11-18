@@ -96,6 +96,15 @@ unit tests do not exercise AppKit or the system candidate window.
   `y`/`yy`, and `/`/`?` searches including Chinese. A yank should clear the
   selection and return to vi normal mode (`COPY`), not pass input to the TUI.
   `q` exits copy mode; Escape first clears a selection, then leaves copy mode.
+- In primary scrollback, press Ctrl+Y / Ctrl+E in vi normal, `v`, `V`, and
+  Ctrl+V visual modes: the viewport must move up / down exactly one line.
+  Try `3` then either chord and hold a chord for key repeat. The vi cursor
+  must stay on the same text until an edge pushes it, with the visual
+  selection following the cursor. At the oldest/live end, scrolling must clamp
+  without exiting vi mode. In an alternate screen with no scrollback the view
+  must stay put, and neither key may reach the TUI. After leaving copy mode,
+  Ctrl+Y / Ctrl+E must again reach the shell/program normally. `/` and `?`
+  search-field input must keep its existing behavior.
 - With mouse reporting enabled in the TUI, clicks and drags should select text
   locally in copy mode, and wheel/trackpad scrolling must not send mouse reports
   or arrow keys to the TUI. Keyboard input and paste must not reach it either.

@@ -1387,6 +1387,8 @@ impl TerminalPane {
             let half = (term.screen_lines() / 2).max(1) as i32;
             let full = term.screen_lines() as i32;
             match ks.key.as_str() {
+                "y" => term.scroll_display(Scroll::Delta(n as i32)),
+                "e" => term.scroll_display(Scroll::Delta(-(n as i32))),
                 "d" => {
                     term.scroll_display(Scroll::Delta(-half));
                     for _ in 0..half {
@@ -3173,6 +3175,62 @@ mod copy_mode_tests {
     use alacritty_terminal::vte::ansi::Processor;
 
     #[test]
+    fn line_scrolling_keeps_the_vi_cursor_on_text_until_the_viewport_edge() {
+        for ty in [
+            None,
+            Some(SelectionType::Simple),
+            Some(SelectionType::Lines),
+            Some(SelectionType::Block),
+        ] {
+            let mut term = Term::new(TermConfig::default(), &TermSize::new(40, 4), VoidListener);
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut term, "你好 line\r\n".repeat(12).as_bytes());
+            term.scroll_display(Scroll::Delta(4));
+            term.toggle_vi_mode();
+            term.vi_goto_point(GridPoint::new(Line(-3), Column(5)));
+            if let Some(ty) = ty {
+                let mut selection = Selection::new(ty, term.vi_mode_cursor.point, Side::Left);
+                selection.include_all();
+                term.selection = Some(selection);
+            }
+            let selection = term.selection.clone();
+            let live_cursor = term.grid().cursor.point;
+            let history = term.grid().history_size();
+            for (delta, offset, line) in [
+                (1, 5, -3),
+                (-1, 4, -3),
+                (3, 7, -4),
+                (-3, 4, -4),
+                (-99_999, 0, 0),
+                (-1, 0, 0),
+                (99_999, history, 3 - history as i32),
+                (1, history, 3 - history as i32),
+            ] {
+                term.scroll_display(Scroll::Delta(delta));
+                assert_eq!(term.grid().display_offset(), offset);
+                assert_eq!(
+                    term.vi_mode_cursor.point,
+                    GridPoint::new(Line(line), Column(5))
+                );
+                assert_eq!(term.grid().cursor.point, live_cursor);
+                assert!(term.mode().contains(TermMode::VI));
+                assert_eq!(term.selection.as_ref().map(|s| s.ty), ty);
+                if line == -3 {
+                    assert_eq!(term.selection, selection);
+                }
+                if let Some(selection) = term.selection.clone() {
+                    assert!(
+                        selection
+                            .to_range(&term)
+                            .unwrap()
+                            .contains(term.vi_mode_cursor.point)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn yanking_returns_to_vi_normal_without_moving_the_cursor_or_view() {
         for alternate in [false, true] {
             for ty in [
@@ -3295,9 +3353,13 @@ mod copy_mode_tests {
             term.vi_mode_cursor.point,
             GridPoint::new(Line(0), Column(5))
         );
-        term.scroll_display(Scroll::Delta(10));
-        assert_eq!(term.grid().history_size(), 0);
-        assert_eq!(term.grid().display_offset(), 0);
+        let cursor = term.vi_mode_cursor.point;
+        for delta in [1, -1, 99_999, -99_999] {
+            term.scroll_display(Scroll::Delta(delta));
+            assert_eq!(term.grid().history_size(), 0);
+            assert_eq!(term.grid().display_offset(), 0);
+            assert_eq!(term.vi_mode_cursor.point, cursor);
+        }
         assert!(!mouse_reporting(*term.mode(), false));
 
         term.toggle_vi_mode();

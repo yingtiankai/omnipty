@@ -13,6 +13,10 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Added
 
+- Vi normal and visual modes now support Ctrl+Y / Ctrl+E to scroll up / down
+  one line, including count prefixes such as `3` then Ctrl+E. The vi cursor
+  stays on the same text until it reaches the viewport edge; active visual
+  selections follow it. Outside copy mode, the keys still reach the program.
 - **Chinese and other IME input on macOS.** Compose text at the terminal cursor,
   in search, and in the app's text fields, with the system candidate window
   following the caret. Unconfirmed text stays out of the shell and broadcast

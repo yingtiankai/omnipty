@@ -259,6 +259,13 @@ mod tests {
     #[test]
     fn ctrl_letters() {
         let mode = TermMode::empty();
+        for (key, byte) in [("ctrl-y", 0x19), ("ctrl-e", 0x05)] {
+            assert!(!uses_text_input(&ks(key), OptionAsMeta::None));
+            assert_eq!(
+                to_bytes(&ks(key), &mode, OptionAsMeta::None),
+                Some(vec![byte])
+            );
+        }
         assert_eq!(
             to_bytes(&ks("ctrl-c"), &mode, OptionAsMeta::None),
             Some(vec![0x03])
