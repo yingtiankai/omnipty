@@ -1427,28 +1427,7 @@ impl TerminalPane {
             return;
         }
 
-        // Named keys first; everything else goes by the typed character so
-        // shifted punctuation (`$`, `^`, `{`) arrives as itself.
-        let key = match ks.key.as_str() {
-            "escape" => Some('\x1b'),
-            "enter" => Some('\r'),
-            "up" => Some('k'),
-            "down" => Some('j'),
-            "left" => Some('h'),
-            "right" => Some('l'),
-            "home" => Some('0'),
-            "end" => Some('$'),
-            "pageup" => Some('\u{1}'),
-            "pagedown" => Some('\u{2}'),
-            "space" => Some(' '),
-            "backspace" => Some('h'),
-            _ => ks.key_char.as_deref().and_then(|c| {
-                let mut it = c.chars();
-                let ch = it.next()?;
-                it.next().is_none().then_some(ch)
-            }),
-        };
-        let Some(key) = key else { return };
+        let Some(key) = keys::vi_key(ks) else { return };
 
         // Counts: digits accumulate, except a leading 0 which is a motion.
         if key.is_ascii_digit() && (key != '0' || count.is_some()) {
@@ -3400,6 +3379,47 @@ mod copy_mode_tests {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn vi_search_directions_find_older_newer_and_repeat_matches() {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::term::{Term, test::TermSize};
+        use alacritty_terminal::vte::ansi::Processor;
+
+        let mut term = Term::new(TermConfig::default(), &TermSize::new(40, 6), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(
+            &mut term,
+            "目标 one\r\ngap\r\n目标 two\r\norigin\r\n目标 three".as_bytes(),
+        );
+        let live_cursor = term.grid().cursor.point;
+        term.toggle_vi_mode();
+        let origin = GridPoint::new(Line(3), Column(0));
+        term.vi_goto_point(origin);
+        let mut regex = RegexSearch::new(&SearchOptions::default().pattern("目标")).unwrap();
+
+        for (direction, line) in [(Direction::Left, 2), (Direction::Right, 4)] {
+            let found = term
+                .search_next(&mut regex, origin, direction, Side::Left, None)
+                .unwrap();
+            assert_eq!(*found.start(), GridPoint::new(Line(line), Column(0)));
+        }
+
+        term.vi_goto_point(GridPoint::new(Line(2), Column(0)));
+        for (direction, line) in [(Direction::Left, 0), (Direction::Right, 2)] {
+            let origin = step_point(&term, term.vi_mode_cursor.point, direction);
+            let found = term
+                .search_next(&mut regex, origin, direction, Side::Left, None)
+                .unwrap();
+            term.vi_goto_point(*found.start());
+            assert_eq!(
+                term.vi_mode_cursor.point,
+                GridPoint::new(Line(line), Column(0))
+            );
+        }
+        assert!(term.mode().contains(TermMode::VI));
+        assert_eq!(term.grid().cursor.point, live_cursor);
+    }
 
     #[test]
     fn options_build_the_expected_pattern() {

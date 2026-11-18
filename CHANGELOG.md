@@ -54,6 +54,10 @@ write for users: what changed and why it matters, not which files moved.
 
 ### Fixed
 
+- `?` (Shift+/) now opens upward/backward search in vi mode even when the
+  macOS input source supplies full-width punctuation or no text character.
+  `/` still searches downward; `n` repeats the chosen direction and `N`
+  reverses it. Terminal input and search-field IME behavior are unchanged.
 - Shells and directly launched programs now close their panes after any normal
   process exit, including nonzero codes. Ctrl+D after a failed shell command
   no longer leaves an exited-process screen. Signal exits and launch failures

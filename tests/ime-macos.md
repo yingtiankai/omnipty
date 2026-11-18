@@ -96,6 +96,14 @@ unit tests do not exercise AppKit or the system candidate window.
   `y`/`yy`, and `/`/`?` searches including Chinese. A yank should clear the
   selection and return to vi normal mode (`COPY`), not pass input to the TUI.
   `q` exits copy mode; Escape first clears a selection, then leaves copy mode.
+- In vi mode with both English and Chinese input sources, press `?` (Shift+/):
+  the search bar must open with a `?` prefix, even with full-width punctuation
+  enabled. Search for a word occurring above and below the vi cursor; `?` must
+  find the older/upper match and `/` the newer/lower one. Confirm with Enter,
+  then check `n` follows that direction and `N` reverses it. Repeat in visual
+  mode and an alternate-screen TUI. No opening `?` or `/` should be inserted
+  into the query or sent to the program, and Chinese query composition must
+  still work. Ordinary `?`, Ctrl+?, and Ctrl+/ outside vi mode are unchanged.
 - In primary scrollback, press Ctrl+Y / Ctrl+E in vi normal, `v`, `V`, and
   Ctrl+V visual modes: the viewport must move up / down exactly one line.
   Try `3` then either chord and hold a chord for key repeat. The vi cursor

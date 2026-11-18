@@ -3,6 +3,27 @@ use gpui::Keystroke;
 
 use crate::config::schema::OptionAsMeta;
 
+pub(super) fn vi_key(ks: &Keystroke) -> Option<char> {
+    match ks.key.as_str() {
+        // IMEs can supply full-width or empty text for the normalized search key.
+        "?" => Some('?'),
+        "/" if ks.modifiers.shift => Some('?'),
+        "escape" => Some('\x1b'),
+        "enter" => Some('\r'),
+        "up" => Some('k'),
+        "down" => Some('j'),
+        "left" => Some('h'),
+        "right" => Some('l'),
+        "home" => Some('0'),
+        "end" => Some('$'),
+        "pageup" => Some('\u{1}'),
+        "pagedown" => Some('\u{2}'),
+        "space" => Some(' '),
+        "backspace" => Some('h'),
+        _ => ks.key_char.as_deref().and_then(single_char),
+    }
+}
+
 pub fn uses_text_input(ks: &Keystroke, option_as_meta: OptionAsMeta) -> bool {
     cfg!(target_os = "macos")
         && crate::line_edit::is_text_key(ks)
@@ -227,6 +248,40 @@ mod tests {
 
     fn ks(s: &str) -> Keystroke {
         Keystroke::parse(s).unwrap()
+    }
+
+    #[test]
+    fn vi_reverse_search_accepts_normalized_question_and_shift_slash() {
+        for chord in ["?", "shift-/"] {
+            for text in [None, Some(""), Some("?"), Some("？"), Some("/")] {
+                let mut key = ks(chord);
+                key.key_char = text.map(str::to_owned);
+                assert_eq!(vi_key(&key), Some('?'), "{key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn vi_named_keys_and_typed_commands_keep_their_meaning() {
+        for (chord, text, expected) in [
+            ("escape", None, Some('\x1b')),
+            ("enter", Some("\n"), Some('\r')),
+            ("up", None, Some('k')),
+            ("pagedown", None, Some('\u{2}')),
+            ("/", Some("/"), Some('/')),
+            ("alt-7", Some("?"), Some('?')),
+            ("n", Some("n"), Some('n')),
+            ("shift-n", Some("N"), Some('N')),
+            ("shift-4", Some("$"), Some('$')),
+            ("shift-[", Some("{"), Some('{')),
+            ("a", Some("ab"), None),
+            ("a", Some(""), None),
+            ("a", None, None),
+        ] {
+            let mut key = ks(chord);
+            key.key_char = text.map(str::to_owned);
+            assert_eq!(vi_key(&key), expected, "{key:?}");
+        }
     }
 
     #[test]
